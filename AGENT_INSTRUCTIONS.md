@@ -101,4 +101,4 @@ TradingBrain/
 ---
 
 ## 完整計畫文件
-詳細的 9 階段計畫請參閱：`.cursor/plans/加密貨幣自動交易系統_42aefe6a.plan.md`
+詳細的 9 階段計畫請參閱：`PLAN.md`（專案根目錄）
