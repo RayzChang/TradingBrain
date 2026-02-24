@@ -7,15 +7,17 @@ TradingBrain — 加密貨幣自動交易系統
 3. 資訊管線排程（資金費率、爆倉、恐懼貪婪）
 4. WebSocket K 線數據流
 5. 否決引擎
-6. (未來) 技術分析 / 策略 / 風控 / 交易執行 / Web 儀表板
+6. 技術分析引擎
+7. (未來) 策略 / 風控 / 交易執行 / Web 儀表板
 """
 
 import asyncio
 import json
 import signal
-import sys
+import time
 from pathlib import Path
 
+import pandas as pd
 from loguru import logger
 
 from config.settings import (
@@ -29,6 +31,8 @@ from core.pipeline.funding_rate import FundingRateMonitor
 from core.pipeline.fear_greed import FearGreedMonitor
 from core.pipeline.liquidation import LiquidationMonitor
 from core.pipeline.veto_engine import VetoEngine
+from core.analysis.engine import AnalysisEngine
+from core.analysis.chop_detector import detect_chop
 from database.db_manager import DatabaseManager
 
 
@@ -44,6 +48,7 @@ class TradingBrain:
         self.fear_greed_monitor: FearGreedMonitor | None = None
         self.liquidation_monitor: LiquidationMonitor | None = None
         self.veto_engine: VetoEngine | None = None
+        self.analysis_engine: AnalysisEngine | None = None
 
     async def startup(self) -> None:
         """系統啟動序列"""
@@ -79,14 +84,18 @@ class TradingBrain:
         )
         logger.info("否決引擎初始化完成")
 
-        # 5. 初始化 WebSocket 數據流
+        # 5. 初始化技術分析引擎
+        self.analysis_engine = AnalysisEngine()
+        logger.info("技術分析引擎初始化完成")
+
+        # 6. 初始化 WebSocket 數據流
         self.ws_feed = BinanceWebSocketFeed(
             symbols=DEFAULT_WATCHLIST,
             timeframes=["1m", "15m", "1h", "4h"],
             on_kline=self._on_kline_closed,
         )
 
-        # 6. 初始化排程器並註冊任務
+        # 7. 初始化排程器並註冊任務
         self.scheduler = TaskScheduler(self.db)
         self._register_scheduled_tasks()
 
@@ -149,18 +158,66 @@ class TradingBrain:
     async def _on_kline_closed(self, candle: dict) -> None:
         """
         K 線收盤回調 — 每當一根 K 線完成時觸發。
-        未來在這裡接入技術分析和策略評估。
+        觸發技術分析計算，並在適當時間框架上做完整 MTF 分析。
         """
         symbol = candle["symbol"]
         tf = candle["timeframe"]
         close = candle["close"]
 
-        # TODO Phase3: 觸發技術分析計算
+        logger.debug(
+            f"Kline closed: {symbol} {tf} close={close:.2f} vol={candle['volume']:.2f}"
+        )
+
+        # 從 WebSocket 快取取得 K 線數據並轉為 DataFrame
+        cache_candles = self.ws_feed.cache.get(symbol.lower(), tf)
+        if len(cache_candles) < 30:
+            return
+
+        df = pd.DataFrame(cache_candles)
+        for col in ("open", "high", "low", "close", "volume"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # 單時間框架分析
+        result = self.analysis_engine.analyze_single(symbol, tf, df)
+
+        # 絞肉機偵測 → 同步更新否決引擎
+        if result.chop and result.chop.is_chop:
+            cooldown_until = time.time() + result.chop.cooldown_minutes * 60
+            self.veto_engine.set_chop_active(True, cooldown_until)
+
+        # 在 15m 收盤時做完整 MTF 分析（主進場時間框架）
+        if tf == "15m":
+            await self._run_mtf_analysis(symbol)
+
         # TODO Phase4: 觸發策略信號評估
         # TODO Phase5: 信號通過否決引擎 -> 風控 -> 執行
 
-        logger.debug(
-            f"Kline closed: {symbol} {tf} close={close:.2f} vol={candle['volume']:.2f}"
+    async def _run_mtf_analysis(self, symbol: str) -> None:
+        """執行完整多時間框架分析"""
+        kline_data: dict[str, pd.DataFrame] = {}
+
+        for tf in ["5m", "15m", "1h", "4h"]:
+            cache_candles = self.ws_feed.cache.get(symbol.lower(), tf)
+            if len(cache_candles) < 50:
+                continue
+            df = pd.DataFrame(cache_candles)
+            for col in ("open", "high", "low", "close", "volume"):
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+            kline_data[tf] = df
+
+        if len(kline_data) < 2:
+            return
+
+        full = self.analysis_engine.analyze_full(symbol, kline_data)
+        snapshot = self.analysis_engine.get_analysis_snapshot(full)
+
+        logger.info(
+            f"MTF分析 {symbol}: "
+            f"趨勢={snapshot.get('mtf', {}).get('alignment', 'N/A')}, "
+            f"方向={snapshot.get('mtf', {}).get('direction', 'N/A')}, "
+            f"信心={snapshot.get('mtf', {}).get('confidence', 0):.0%}"
         )
 
     async def _daily_report(self) -> None:

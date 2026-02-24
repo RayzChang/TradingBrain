@@ -1,7 +1,7 @@
 # TradingBrain 專案進度追蹤
 
 > 最後更新: 2026-02-24
-> 當前階段: **第二階段 - 24/7 資訊管線** (已完成!)
+> 當前階段: **第三階段 - 技術分析引擎** (已完成!)
 
 ---
 
@@ -36,13 +36,23 @@
   - [x] main.py 整合全部資訊管線模組
   - [x] 測試通過：恐懼貪婪=8(極度恐懼)、697對資金費率、否決引擎正確否決做空
 
+- [x] **第三階段：技術分析引擎**
+  - [x] core/analysis/indicators.py — 14 項指標：RSI, MACD, BB, EMA(9/21/50/200), SMA, ATR, ADX, OBV, VWAP, Stoch RSI
+  - [x] core/analysis/divergence.py — RSI/MACD 常規看漲/看跌背離偵測（Swing High/Low 演算法）
+  - [x] core/analysis/fibonacci.py — 自動斐波那契回撤(7級)+擴展(5級)，含最近支撐/阻力位查找
+  - [x] core/analysis/candlestick.py — K線型態辨識：十字星、錘子/倒錘、吞噬、晨星/夜星、三白兵/三黑鴉
+  - [x] core/analysis/multi_timeframe.py — 多時間框架趨勢一致性分析 + HTF RSI 確認
+  - [x] core/analysis/chop_detector.py — 絞肉機偵測器（ADX+影線比+位移率+假突破，含冷卻時間）
+  - [x] core/analysis/engine.py — AnalysisEngine 統一入口，整合所有分析模組
+  - [x] main.py 整合：K線收盤觸發分析 → 絞肉機結果同步否決引擎 → 15m 觸發 MTF 分析
+  - [x] 測試通過：7 項測試（指標/背離/斐波那契/K線型態/絞肉機/MTF/引擎整合）全部 PASS
+
 ## 進行中
 
 （無）
 
 ## 待做
 
-- [ ] 第三階段：技術分析引擎
 - [ ] 第四階段：策略與信號系統
 - [ ] 第五階段：風險管理
 - [ ] 第六階段：Web 儀表板 (React + FastAPI)
@@ -57,13 +67,12 @@
 
 ## 下一步
 
-開始第三階段：技術分析引擎
-1. core/analysis/indicators.py — RSI, MACD, BB, EMA/SMA, ATR, OBV, VWAP, ADX
-2. core/analysis/divergence.py — RSI/MACD 頂背離、底背離
-3. core/analysis/fibonacci.py — 自動斐波那契回撤/擴展
-4. core/analysis/patterns.py — K線型態辨識
-5. core/analysis/multi_tf.py — 多時間框架趨勢一致性
-6. core/analysis/chop_detector.py — 絞肉機行情偵測器
+開始第四階段：策略與信號系統
+1. core/strategy/base.py — 策略基類（統一介面）
+2. core/strategy/trend_following.py — 趨勢跟蹤策略（EMA 交叉 + ADX 確認）
+3. core/strategy/mean_reversion.py — 均值回歸策略（BB + RSI 超買超賣）
+4. core/strategy/signal_aggregator.py — 信號聚合器（多策略投票 + 否決引擎過濾）
+5. core/strategy/coin_screener.py — 幣種篩選器（從 watchlist 中選出最佳標的）
 
 ## 筆記
 
