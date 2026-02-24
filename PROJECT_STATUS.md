@@ -1,7 +1,7 @@
 # TradingBrain 專案進度追蹤
 
 > 最後更新: 2026-02-24
-> 當前階段: **第一階段 - 基礎建設** (已完成!)
+> 當前階段: **第二階段 - 24/7 資訊管線** (已完成!)
 
 ---
 
@@ -25,6 +25,16 @@
   - [x] main.py — 主程式入口（啟動序列+信號處理+優雅關閉）
   - [x] .env.example + .gitignore + README.md + requirements.txt
   - [x] 啟動測試通過：23 個風控參數成功載入
+- [x] **第二階段：24/7 資訊管線（否決權模型）**
+  - [x] core/data/market_data.py — REST K線採集 + Parquet 讀寫 + 自動分頁
+  - [x] core/data/websocket_feed.py — WebSocket 即時 K 線 + KlineCache 記憶體快取 + 自動重連
+  - [x] core/pipeline/funding_rate.py — 幣安資金費率監控（697 交易對）
+  - [x] core/pipeline/fear_greed.py — 恐懼貪婪指數（Alternative.me API）
+  - [x] core/pipeline/liquidation.py — 爆倉數據監控 + 連環爆倉偵測
+  - [x] core/pipeline/veto_engine.py — 否決引擎（資金費率/恐懼貪婪/爆倉/絞肉機）
+  - [x] core/pipeline/scheduler.py — APScheduler 排程引擎（含任務狀態追蹤）
+  - [x] main.py 整合全部資訊管線模組
+  - [x] 測試通過：恐懼貪婪=8(極度恐懼)、697對資金費率、否決引擎正確否決做空
 
 ## 進行中
 
@@ -32,7 +42,6 @@
 
 ## 待做
 
-- [ ] 第二階段：24/7 資訊管線（否決權模型）
 - [ ] 第三階段：技術分析引擎
 - [ ] 第四階段：策略與信號系統
 - [ ] 第五階段：風險管理
@@ -48,14 +57,13 @@
 
 ## 下一步
 
-開始第二階段：24/7 資訊管線
-1. core/pipeline/scheduler.py — APScheduler 排程核心
-2. core/data/websocket_feed.py — 幣安 WebSocket K 線即時數據
-3. core/data/market_data.py — REST API 歷史數據 + Parquet
-4. core/pipeline/funding_rate.py — 資金費率監控
-5. core/pipeline/liquidation.py — 爆倉數據
-6. core/pipeline/fear_greed.py — 恐懼貪婪指數
-7. core/pipeline/veto_engine.py — 否決引擎
+開始第三階段：技術分析引擎
+1. core/analysis/indicators.py — RSI, MACD, BB, EMA/SMA, ATR, OBV, VWAP, ADX
+2. core/analysis/divergence.py — RSI/MACD 頂背離、底背離
+3. core/analysis/fibonacci.py — 自動斐波那契回撤/擴展
+4. core/analysis/patterns.py — K線型態辨識
+5. core/analysis/multi_tf.py — 多時間框架趨勢一致性
+6. core/analysis/chop_detector.py — 絞肉機行情偵測器
 
 ## 筆記
 
