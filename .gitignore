@@ -1,0 +1,53 @@
+# Environment & Secrets
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+logs/*.log
+
+# Data (large files)
+data/klines/*.parquet
+
+# Database
+*.db
+*.sqlite3
+
+# Node / React
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.next/
+
+# Cursor (keep rules, ignore plans)
+.cursor/plans/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
