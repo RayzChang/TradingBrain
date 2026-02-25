@@ -63,7 +63,8 @@
 ### P9：實盤（真錢）
 
 - 改用**正式站**的 API：到 [Binance 官網](https://www.binance.com/) → API 管理 → 建立 API，同樣只開「合約交易」、不開提幣，建議綁定 IP。
-- 在 `.env` 把 `BINANCE_TESTNET=false`，並把 `BINANCE_API_KEY`、`BINANCE_API_SECRET` 換成正式站的 Key/Secret。
+- 在 `.env` 設定：`BINANCE_TESTNET=false`，並把 `BINANCE_API_KEY`、`BINANCE_API_SECRET` 換成正式站的 Key/Secret。
+- **另須設 `TRADING_MODE=live`**，程式才會在正式站下單（雙重確認，避免誤用真錢）。
 - 計畫建議先用 50U 跑約 2 週，穩定後再考慮加碼到 300U。
 
 ---

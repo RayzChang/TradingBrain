@@ -1,7 +1,7 @@
 # TradingBrain 專案進度追蹤
 
 > 最後更新: 2026-02-25
-> 當前階段: **第八階段 - 模擬交易** (已完成!)
+> 當前階段: **第九階段 - 實盤上線** (已完成!)
 
 ---
 
@@ -86,6 +86,11 @@
   - [x] main.py — 交易所餘額、execute_trade、position_check/heartbeat 排程、_daily_report 發 LINE
   - [x] trades 表新增 exchange_order_id；.env.example 註解更新
   - [x] tests/test_execution.py 通過
+- [x] **第九階段：實盤上線**
+  - [x] execution_engine: is_trading_enabled() 支援實盤（BINANCE_TESTNET=false + TRADING_MODE=live）
+  - [x] 開倉/平倉 LINE 通知（實盤與模擬皆可發送）
+  - [x] main 以 is_trading_enabled() 驅動同步與持倉檢查（模擬與實盤共用）
+  - [x] .env.example 補充 TRADING_MODE 說明；測試與文件更新
 
 ## 進行中
 
@@ -93,7 +98,7 @@
 
 ## 待做
 
-- [ ] 第九階段：實盤上線
+（無 — 九階段皆已完成）
 
 ## 已知問題
 
@@ -102,8 +107,7 @@
 
 ## 下一步
 
-開始第九階段：實盤上線
-1. 50 USDT 起步、LINE 通知、穩定 2 週後增至 300 USDT
+可進行你規劃的三項測試；實盤建議 50U 起步、穩定 2 週後再增至 300U。
 
 ## 筆記
 

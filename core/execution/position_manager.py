@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from core.execution.binance_client import BinanceFuturesClient
+from notifications.line_notify import send_line_message
 
 if TYPE_CHECKING:
     from database.db_manager import DatabaseManager
@@ -130,6 +131,12 @@ async def run_position_check(
             fee=0,
             exit_reason=exit_reason,
         )
+        # P9: 平倉 LINE 通知
+        close_msg = (
+            f"📉 TradingBrain 平倉\n"
+            f"{symbol} {side} | {exit_reason} | PnL {pnl:+.2f} U ({pnl_pct:+.2f}%)"
+        )
+        send_line_message(close_msg)
         if risk_manager and hasattr(risk_manager, "update_equity_high_water_mark"):
             # 可選：更新權益高水位
             try:

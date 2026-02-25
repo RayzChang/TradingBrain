@@ -10,27 +10,29 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.execution.execution_engine import execute_trade, _is_simulation_trading_enabled
+from core.execution.execution_engine import execute_trade, is_trading_enabled
 from core.strategy.base import TradeSignal
 from core.risk.risk_manager import RiskCheckResult
 from notifications.line_notify import send_line_message
 
 
-def test_is_simulation_trading_enabled():
-    """模擬交易僅在 Testnet 且 API Key 設定時啟用"""
+def test_is_trading_enabled():
+    """Testnet+key 啟用；實盤需 TRADING_MODE=live+key 才啟用；無 key 不啟用"""
     with patch("core.execution.execution_engine.BINANCE_TESTNET", True), patch(
         "core.execution.execution_engine.BINANCE_API_KEY", "key"
-    ):
-        assert _is_simulation_trading_enabled() is True
+    ), patch("core.execution.execution_engine.TRADING_MODE", "paper"):
+        assert is_trading_enabled() is True
     with patch("core.execution.execution_engine.BINANCE_TESTNET", False), patch(
         "core.execution.execution_engine.BINANCE_API_KEY", "key"
-    ):
-        assert _is_simulation_trading_enabled() is False
-    with patch("core.execution.execution_engine.BINANCE_TESTNET", True), patch(
-        "core.execution.execution_engine.BINANCE_API_KEY", ""
-    ):
-        assert _is_simulation_trading_enabled() is False
-    print("  [PASS] _is_simulation_trading_enabled")
+    ), patch("core.execution.execution_engine.TRADING_MODE", "paper"):
+        assert is_trading_enabled() is False
+    with patch("core.execution.execution_engine.BINANCE_TESTNET", False), patch(
+        "core.execution.execution_engine.BINANCE_API_KEY", "key"
+    ), patch("core.execution.execution_engine.TRADING_MODE", "live"):
+        assert is_trading_enabled() is True
+    with patch("core.execution.execution_engine.BINANCE_API_KEY", ""):
+        assert is_trading_enabled() is False
+    print("  [PASS] is_trading_enabled")
 
 
 def test_line_send_when_empty_token():
@@ -64,7 +66,7 @@ async def test_execute_trade_when_simulation_disabled():
     )
     db = MagicMock()
 
-    with patch("core.execution.execution_engine._is_simulation_trading_enabled", return_value=False):
+    with patch("core.execution.execution_engine.is_trading_enabled", return_value=False):
         out = await execute_trade(signal, risk_result, 100000.0, db, "test")
     assert out is None
     db.insert_trade.assert_not_called()
@@ -102,7 +104,7 @@ async def test_execute_trade_success_mock():
     async def mock_place_tp(*args, **kwargs):
         return 12347
 
-    with patch("core.execution.execution_engine._is_simulation_trading_enabled", return_value=True):
+    with patch("core.execution.execution_engine.is_trading_enabled", return_value=True):
         with patch("core.execution.execution_engine.BinanceFuturesClient") as Klass:
             inst = MagicMock()
             inst.set_leverage = AsyncMock(side_effect=mock_set_leverage)
@@ -132,7 +134,7 @@ def test_binance_client_round_quantity():
 
 
 if __name__ == "__main__":
-    test_is_simulation_trading_enabled()
+    test_is_trading_enabled()
     test_line_send_when_empty_token()
     test_binance_client_round_quantity()
     import asyncio

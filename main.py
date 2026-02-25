@@ -28,8 +28,6 @@ from config.settings import (
     TRADING_MODE, DB_PATH, KLINE_DATA_DIR,
     SCHEDULER_CONFIG, DEFAULT_WATCHLIST,
     API_PORT,
-    BINANCE_TESTNET,
-    BINANCE_API_KEY,
     TRADING_INITIAL_BALANCE,
 )
 from core.logger_setup import setup_logger
@@ -46,7 +44,7 @@ from core.strategy.mean_reversion import MeanReversionStrategy
 from core.strategy.signal_aggregator import SignalAggregator
 from core.strategy.coin_screener import CoinScreener
 from core.risk.risk_manager import RiskManager
-from core.execution.execution_engine import execute_trade
+from core.execution.execution_engine import execute_trade, is_trading_enabled
 from core.execution.binance_client import BinanceFuturesClient
 from core.execution.position_manager import sync_positions_from_exchange, run_position_check
 from notifications.line_notify import send_line_message
@@ -138,8 +136,8 @@ class TradingBrain:
         self.scheduler = TaskScheduler(self.db)
         self._register_scheduled_tasks()
 
-        # 7b. 模擬交易：初始化幣安客戶端並同步持倉（斷網/斷電恢復）
-        if BINANCE_TESTNET and BINANCE_API_KEY:
+        # 7b. 模擬/實盤：初始化幣安客戶端並同步持倉（斷網/斷電恢復）
+        if is_trading_enabled():
             try:
                 self.binance_client = BinanceFuturesClient()
                 await sync_positions_from_exchange(self.db, self.binance_client)
@@ -207,8 +205,8 @@ class TradingBrain:
             minutes=60, description="恐懼貪婪指數",
         )
 
-        # 持倉/止損檢查 - 每 1 分鐘（模擬交易）
-        if BINANCE_TESTNET and BINANCE_API_KEY:
+        # 持倉/止損檢查 - 每 1 分鐘（模擬或實盤）
+        if is_trading_enabled():
             self.scheduler.add_interval_task(
                 "position_check", self._position_check,
                 minutes=SCHEDULER_CONFIG["position_check"]["interval_min"],

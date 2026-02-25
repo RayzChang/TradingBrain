@@ -1,7 +1,8 @@
 """
 執行引擎 — 串接風控結果與幣安下單、寫入 DB
 
-僅在 BINANCE_TESTNET 且 API Key 已設定時實際下單；否則僅 log。
+- 模擬（P8）：BINANCE_TESTNET=true 且 API Key 已設定 → 在 Testnet 下單
+- 實盤（P9）：BINANCE_TESTNET=false、TRADING_MODE=live 且 API Key 已設定 → 在正式站下單
 """
 
 from datetime import datetime
@@ -9,8 +10,9 @@ from typing import TYPE_CHECKING, Optional
 
 from loguru import logger
 
-from config.settings import BINANCE_API_KEY, BINANCE_TESTNET
+from config.settings import BINANCE_API_KEY, BINANCE_TESTNET, TRADING_MODE
 from core.execution.binance_client import BinanceFuturesClient
+from notifications.line_notify import send_line_message
 
 if TYPE_CHECKING:
     from core.risk.risk_manager import RiskCheckResult
@@ -18,9 +20,17 @@ if TYPE_CHECKING:
     from database.db_manager import DatabaseManager
 
 
-def _is_simulation_trading_enabled() -> bool:
-    """僅在 Testnet 且 API Key 已設定時執行真實下單"""
-    return bool(BINANCE_TESTNET and BINANCE_API_KEY)
+def is_trading_enabled() -> bool:
+    """
+    是否執行真實下單（Testnet 或實盤）。
+    - Testnet：BINANCE_TESTNET=true 且 API Key 已設定
+    - 實盤：BINANCE_TESTNET=false、TRADING_MODE=live 且 API Key 已設定（雙重確認防誤觸）
+    """
+    if not BINANCE_API_KEY:
+        return False
+    if BINANCE_TESTNET:
+        return True
+    return TRADING_MODE == "live"
 
 
 async def execute_trade(
@@ -54,9 +64,9 @@ async def execute_trade(
     stop_loss = risk_result.stop_loss
     take_profit = risk_result.take_profit
 
-    if not _is_simulation_trading_enabled():
+    if not is_trading_enabled():
         logger.info(
-            f"模擬交易未啟用: {symbol} {signal.signal_type} "
+            f"交易未啟用: {symbol} {signal.signal_type} "
             f"size={size_usdt}U sl={stop_loss} (僅 log，未下單)"
         )
         return None
@@ -104,4 +114,13 @@ async def execute_trade(
     }
     trade_id = db.insert_trade(trade_data)
     logger.info(f"執行完成: trade_id={trade_id} {symbol} {signal.signal_type} orderId={order_id}")
+
+    # P9: 開倉 LINE 通知（實盤/模擬皆可發，若已設定 LINE）
+    mode = "Testnet" if BINANCE_TESTNET else "實盤"
+    open_msg = (
+        f"📈 TradingBrain 開倉 ({mode})\n"
+        f"{symbol} {signal.signal_type} | 約 {size_usdt:.0f}U @ {entry_price:.2f} | 槓桿 {leverage}x"
+    )
+    send_line_message(open_msg)
+
     return trade_id
