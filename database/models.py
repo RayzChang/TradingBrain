@@ -26,6 +26,7 @@ TABLES = {
             exit_reason TEXT,
             strategy_name TEXT,
             veto_applied TEXT,
+            exchange_order_id TEXT,
             opened_at TEXT NOT NULL,
             closed_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))

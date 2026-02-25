@@ -1,7 +1,7 @@
 # TradingBrain 專案進度追蹤
 
 > 最後更新: 2026-02-25
-> 當前階段: **第七階段 - 回測系統** (已完成!)
+> 當前階段: **第八階段 - 模擬交易** (已完成!)
 
 ---
 
@@ -78,6 +78,14 @@
   - [x] run_backtest.py — CLI（--symbol, --tf, --balance, --days 模擬 K 線）
   - [x] api/routes/backtest.py — POST /api/backtest/run（需 Parquet 存在）
   - [x] tests/test_backtest.py 通過
+- [x] **第八階段：模擬交易**
+  - [x] notifications/line_notify.py — LINE 每日報告與心跳異常通知
+  - [x] core/execution/binance_client.py — 幣安合約簽名客戶端（餘額/持倉/市價單/止損止盈）
+  - [x] core/execution/execution_engine.py — 風控通過後下單與 insert_trade
+  - [x] core/execution/position_manager.py — 啟動時持倉同步、定時止損止盈檢查
+  - [x] main.py — 交易所餘額、execute_trade、position_check/heartbeat 排程、_daily_report 發 LINE
+  - [x] trades 表新增 exchange_order_id；.env.example 註解更新
+  - [x] tests/test_execution.py 通過
 
 ## 進行中
 
@@ -85,7 +93,6 @@
 
 ## 待做
 
-- [ ] 第八階段：模擬交易
 - [ ] 第九階段：實盤上線
 
 ## 已知問題
@@ -95,8 +102,8 @@
 
 ## 下一步
 
-開始第八階段：模擬交易
-1. 幣安 Testnet、模擬下單與持倉追蹤、24/7 運行、LINE 每日報告與心跳
+開始第九階段：實盤上線
+1. 50 USDT 起步、LINE 通知、穩定 2 週後增至 300 USDT
 
 ## 筆記
 

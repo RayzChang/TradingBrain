@@ -40,6 +40,13 @@ class DatabaseManager:
             for index_sql in INDEXES:
                 conn.execute(index_sql)
 
+            # Phase8: 既有 DB 補上 exchange_order_id（新 DB 已由 TABLES 定義）
+            try:
+                conn.execute("ALTER TABLE trades ADD COLUMN exchange_order_id TEXT")
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
+
             conn.commit()
         logger.info(f"Database initialized at {self.db_path} (WAL mode)")
 

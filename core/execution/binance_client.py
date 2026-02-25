@@ -1,0 +1,288 @@
+"""
+幣安 USDT 合約 REST 客戶端（含 Testnet）
+
+用於模擬/實盤：取得餘額與持倉、下市價單、掛止損/止盈。
+所有請求經 RateLimiter 限流，簽名使用 HMAC SHA256。
+"""
+
+import decimal
+import hashlib
+import hmac
+import time
+from typing import Any, Optional
+
+import httpx
+from loguru import logger
+
+from config.settings import (
+    BINANCE_API_KEY,
+    BINANCE_API_SECRET,
+    BINANCE_REST_URL,
+)
+from core.rate_limiter import RateLimiter
+
+
+def _round_quantity(quantity: float, step_size: float) -> str:
+    """依交易所 stepSize 將數量捨入為合規字串"""
+    if step_size <= 0:
+        return f"{quantity:.8f}".rstrip("0").rstrip(".")
+    # 計算小數位數
+    ss = str(step_size).rstrip("0")
+    if "." in ss:
+        decimals = len(ss.split(".")[-1])
+    else:
+        decimals = 0
+    # 捨入到 step 的倍數
+    step = decimal.Decimal(str(step_size))
+    q = decimal.Decimal(str(quantity))
+    rounded = (q // step) * step
+    return f"{float(rounded):.{decimals}f}".rstrip("0").rstrip(".")
+
+
+class BinanceFuturesClient:
+    """
+    幣安 USDT 合約 API 客戶端（簽名請求）。
+    """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        api_secret: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> None:
+        self.api_key = api_key or BINANCE_API_KEY
+        self.api_secret = api_secret or BINANCE_API_SECRET
+        self.base_url = (base_url or BINANCE_REST_URL).rstrip("/")
+        self.limiter = RateLimiter.get_instance()
+        self._client: Optional[httpx.AsyncClient] = None
+        self._symbol_info_cache: dict[str, Any] = {}
+
+    def _sign(self, params: dict[str, Any]) -> dict[str, Any]:
+        """加入 timestamp 並計算 signature，回傳新 params"""
+        params = dict(params)
+        params["timestamp"] = int(time.time() * 1000)
+        query = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+        sig = hmac.new(
+            self.api_secret.encode("utf-8"),
+            query.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        params["signature"] = sig
+        return params
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[dict] = None,
+        weight: int = 1,
+        is_order: bool = False,
+    ) -> dict[str, Any]:
+        """發送簽名請求（GET 或 POST）"""
+        if not self.api_key or not self.api_secret:
+            raise ValueError("BINANCE_API_KEY / BINANCE_API_SECRET 未設定")
+        await self.limiter.acquire(weight=weight, is_order=is_order)
+        url = f"{self.base_url}{path}"
+        params = params or {}
+        params = self._sign(params)
+        headers = {"X-MBX-APIKEY": self.api_key}
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            if method == "GET":
+                resp = await client.get(url, params=params, headers=headers)
+            else:
+                resp = await client.post(url, params=params, headers=headers)
+        self.limiter.update_from_headers(dict(resp.headers))
+        resp.raise_for_status()
+        return resp.json()
+
+    async def _get_exchange_info_symbol(self, symbol: str) -> Optional[dict]:
+        """取得單一交易對的 exchangeInfo（帶快取）"""
+        if symbol in self._symbol_info_cache:
+            return self._symbol_info_cache[symbol]
+        await self.limiter.acquire(weight=40)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{self.base_url}/fapi/v1/exchangeInfo")
+        resp.raise_for_status()
+        data = resp.json()
+        for s in data.get("symbols", []):
+            if s["symbol"] == symbol:
+                self._symbol_info_cache[symbol] = s
+                return s
+        return None
+
+    def _quantity_precision_from_filters(self, symbol_info: Optional[dict]) -> float:
+        """從 LOT_SIZE 取得 stepSize"""
+        if not symbol_info:
+            return 1e-8
+        for f in symbol_info.get("filters", []):
+            if f.get("filterType") == "LOT_SIZE":
+                return float(f.get("stepSize", "0.00001"))
+        return 0.00001
+
+    async def get_ticker_price(self, symbol: str) -> Optional[float]:
+        """取得指定交易對最新價（GET /fapi/v1/ticker/price，公開接口）"""
+        await self.limiter.acquire(weight=1)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{self.base_url}/fapi/v1/ticker/price", params={"symbol": symbol})
+        resp.raise_for_status()
+        data = resp.json()
+        return float(data.get("price", 0)) if data.get("price") else None
+
+    async def get_balance(self) -> float:
+        """取得 USDT 錢包權益（totalWalletBalance）"""
+        data = await self._request("GET", "/fapi/v2/account", weight=5)
+        for asset in data.get("assets", []):
+            if asset.get("asset") == "USDT":
+                return float(asset.get("totalWalletBalance", 0))
+        return 0.0
+
+    async def get_positions(self) -> list[dict]:
+        """取得所有未平倉部位（positionAmt != 0）"""
+        data = await self._request("GET", "/fapi/v2/positionRisk", weight=5)
+        positions = []
+        for p in data:
+            amt = float(p.get("positionAmt", 0))
+            if amt != 0:
+                positions.append({
+                    "symbol": p.get("symbol"),
+                    "positionAmt": amt,
+                    "entryPrice": float(p.get("entryPrice", 0)),
+                    "unRealizedProfit": float(p.get("unRealizedProfit", 0)),
+                    "leverage": int(p.get("leverage", 1)),
+                })
+        return positions
+
+    async def set_leverage(self, symbol: str, leverage: int) -> None:
+        """設定合約槓桿"""
+        await self._request(
+            "POST",
+            "/fapi/v1/leverage",
+            params={"symbol": symbol, "leverage": leverage},
+            weight=1,
+            is_order=True,
+        )
+        logger.info(f"Leverage set: {symbol} -> {leverage}x")
+
+    async def _format_quantity(self, symbol: str, quantity: float) -> str:
+        """依交易所規則格式化數量"""
+        info = await self._get_exchange_info_symbol(symbol)
+        step = self._quantity_precision_from_filters(info)
+        return _round_quantity(quantity, step)
+
+    async def place_market_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity_base: float,
+    ) -> Optional[int]:
+        """
+        市價開倉。side 為 "BUY" 或 "SELL"。
+        回傳 orderId，失敗回傳 None 並記錄日誌。
+        """
+        try:
+            qty_str = await self._format_quantity(symbol, quantity_base)
+            if float(qty_str) <= 0:
+                logger.warning(f"place_market_order: 數量捨入後為 0, symbol={symbol}")
+                return None
+            data = await self._request(
+                "POST",
+                "/fapi/v1/order",
+                params={
+                    "symbol": symbol,
+                    "side": side,
+                    "type": "MARKET",
+                    "quantity": qty_str,
+                },
+                weight=1,
+                is_order=True,
+            )
+            order_id = data.get("orderId")
+            logger.info(f"Market order filled: {symbol} {side} qty={qty_str} orderId={order_id}")
+            return int(order_id) if order_id is not None else None
+        except httpx.HTTPStatusError as e:
+            logger.error(f"place_market_order HTTP error: {e.response.status_code} {e.response.text}")
+            return None
+        except Exception as e:
+            logger.exception(f"place_market_order failed: {e}")
+            return None
+
+    async def place_stop_loss(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        stop_price: float,
+        reduce_only: bool = True,
+    ) -> Optional[int]:
+        """掛止損單（STOP_MARKET）"""
+        try:
+            qty_str = await self._format_quantity(symbol, quantity)
+            if float(qty_str) <= 0:
+                return None
+            params = {
+                "symbol": symbol,
+                "side": side,
+                "type": "STOP_MARKET",
+                "quantity": qty_str,
+                "stopPrice": _round_quantity(stop_price, 0.01),
+                "reduceOnly": "true" if reduce_only else "false",
+                "closePosition": "false",
+            }
+            data = await self._request("POST", "/fapi/v1/order", params=params, weight=1, is_order=True)
+            return int(data.get("orderId")) if data.get("orderId") else None
+        except Exception as e:
+            logger.warning(f"place_stop_loss failed: {e}")
+            return None
+
+    async def place_take_profit(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        stop_price: float,
+        reduce_only: bool = True,
+    ) -> Optional[int]:
+        """掛止盈單（TAKE_PROFIT_MARKET）"""
+        try:
+            qty_str = await self._format_quantity(symbol, quantity)
+            if float(qty_str) <= 0:
+                return None
+            params = {
+                "symbol": symbol,
+                "side": side,
+                "type": "TAKE_PROFIT_MARKET",
+                "quantity": qty_str,
+                "stopPrice": _round_quantity(stop_price, 0.01),
+                "reduceOnly": "true" if reduce_only else "false",
+                "closePosition": "false",
+            }
+            data = await self._request("POST", "/fapi/v1/order", params=params, weight=1, is_order=True)
+            return int(data.get("orderId")) if data.get("orderId") else None
+        except Exception as e:
+            logger.warning(f"place_take_profit failed: {e}")
+            return None
+
+    async def close_position_market(self, symbol: str, side: str, quantity: float) -> Optional[int]:
+        """市價平倉（reduceOnly）。side 為平倉方向：多倉平倉用 SELL，空倉平倉用 BUY。"""
+        try:
+            qty_str = await self._format_quantity(symbol, quantity)
+            if float(qty_str) <= 0:
+                return None
+            data = await self._request(
+                "POST",
+                "/fapi/v1/order",
+                params={
+                    "symbol": symbol,
+                    "side": side,
+                    "type": "MARKET",
+                    "quantity": qty_str,
+                    "reduceOnly": "true",
+                },
+                weight=1,
+                is_order=True,
+            )
+            return int(data.get("orderId")) if data.get("orderId") else None
+        except Exception as e:
+            logger.error(f"close_position_market failed: {e}")
+            return None

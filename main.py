@@ -11,7 +11,7 @@ TradingBrain — 加密貨幣自動交易系統
 7. 策略與信號系統（多策略投票 + 否決過濾）
 8. 風險管理核心（倉位/止損/熔斷/冷卻）
 9. Web 儀表板 API（FastAPI，與主程式同進程背景執行）
-10. (未來) 交易執行
+10. 交易執行（Testnet 模擬 / 實盤）
 """
 
 import asyncio
@@ -28,6 +28,9 @@ from config.settings import (
     TRADING_MODE, DB_PATH, KLINE_DATA_DIR,
     SCHEDULER_CONFIG, DEFAULT_WATCHLIST,
     API_PORT,
+    BINANCE_TESTNET,
+    BINANCE_API_KEY,
+    TRADING_INITIAL_BALANCE,
 )
 from core.logger_setup import setup_logger
 from core.data.websocket_feed import BinanceWebSocketFeed
@@ -43,7 +46,10 @@ from core.strategy.mean_reversion import MeanReversionStrategy
 from core.strategy.signal_aggregator import SignalAggregator
 from core.strategy.coin_screener import CoinScreener
 from core.risk.risk_manager import RiskManager
-from config.settings import TRADING_INITIAL_BALANCE
+from core.execution.execution_engine import execute_trade
+from core.execution.binance_client import BinanceFuturesClient
+from core.execution.position_manager import sync_positions_from_exchange, run_position_check
+from notifications.line_notify import send_line_message
 from database.db_manager import DatabaseManager
 
 
@@ -63,6 +69,8 @@ class TradingBrain:
         self.signal_aggregator: SignalAggregator | None = None
         self.coin_screener: CoinScreener | None = None
         self.risk_manager: RiskManager | None = None
+        self.binance_client: BinanceFuturesClient | None = None
+        self.last_kline_received_at: float = 0.0  # 供心跳檢查用
 
     async def startup(self) -> None:
         """系統啟動序列"""
@@ -130,6 +138,16 @@ class TradingBrain:
         self.scheduler = TaskScheduler(self.db)
         self._register_scheduled_tasks()
 
+        # 7b. 模擬交易：初始化幣安客戶端並同步持倉（斷網/斷電恢復）
+        if BINANCE_TESTNET and BINANCE_API_KEY:
+            try:
+                self.binance_client = BinanceFuturesClient()
+                await sync_positions_from_exchange(self.db, self.binance_client)
+                logger.info("Testnet 持倉同步完成")
+            except Exception as e:
+                logger.warning(f"Testnet 持倉同步跳過: {e}")
+                self.binance_client = None
+
         self.running = True
         logger.info("TradingBrain 啟動完成！")
         logger.info(f"資料庫: {DB_PATH}")
@@ -189,9 +207,19 @@ class TradingBrain:
             minutes=60, description="恐懼貪婪指數",
         )
 
-        # TODO Phase3+: 策略評估 - 每 1 分鐘
-        # TODO Phase3+: 持倉檢查 - 每 1 分鐘
-        # TODO Phase4+: 幣種篩選 - 每 60 分鐘
+        # 持倉/止損檢查 - 每 1 分鐘（模擬交易）
+        if BINANCE_TESTNET and BINANCE_API_KEY:
+            self.scheduler.add_interval_task(
+                "position_check", self._position_check,
+                minutes=SCHEDULER_CONFIG["position_check"]["interval_min"],
+                description="持倉止損止盈檢查",
+            )
+        # 心跳（靜默：僅異常時 LINE）
+        self.scheduler.add_interval_task(
+            "heartbeat", self._heartbeat,
+            minutes=SCHEDULER_CONFIG["heartbeat"]["interval_min"],
+            description="LINE 心跳(靜默)",
+        )
 
         # 每日報告 - 每天 UTC 00:00
         self.scheduler.add_cron_task(
@@ -207,6 +235,8 @@ class TradingBrain:
         symbol = candle["symbol"]
         tf = candle["timeframe"]
         close = candle["close"]
+
+        self.last_kline_received_at = time.time()
 
         logger.debug(
             f"Kline closed: {symbol} {tf} close={close:.2f} vol={candle['volume']:.2f}"
@@ -275,7 +305,13 @@ class TradingBrain:
         primary = full.single_tf_results.get(full.primary_tf)
         if not primary or primary.df_enriched is None:
             primary = None
-        balance = TRADING_INITIAL_BALANCE  # Phase6+ 改為交易所餘額
+        # 模擬/實盤時使用交易所餘額，否則使用設定初始餘額
+        balance = TRADING_INITIAL_BALANCE
+        if self.binance_client:
+            try:
+                balance = await self.binance_client.get_balance()
+            except Exception as e:
+                logger.warning(f"取得交易所餘額失敗，使用初始餘額: {e}")
         open_trades = self.db.get_open_trades()
         for sig in agg_result.passed:
             entry_price = primary.df_enriched["close"].iloc[-1] if primary else 0
@@ -288,15 +324,21 @@ class TradingBrain:
                     sig, balance, float(entry_price), atr, len(open_trades)
                 )
                 if risk_result.passed:
-                    logger.info(
-                        f"風控通過: {sig.symbol} {sig.signal_type} "
-                        f"size={risk_result.size_usdt}U sl={risk_result.stop_loss} (待執行層下單)"
+                    trade_id = await execute_trade(
+                        sig, risk_result, float(entry_price), self.db, sig.strategy_name
                     )
+                    if trade_id:
+                        open_trades = self.db.get_open_trades()
+                    else:
+                        logger.info(
+                            f"風控通過但未下單: {sig.symbol} {sig.signal_type} "
+                            f"size={risk_result.size_usdt}U sl={risk_result.stop_loss}"
+                        )
                 else:
                     logger.info(f"風控攔截: {sig.symbol} {sig.signal_type} - {risk_result.reason}")
 
     async def _daily_report(self) -> None:
-        """生成每日績效報告"""
+        """生成每日績效報告並透過 LINE 發送"""
         trades_today = self.db.get_trades_today()
         daily_pnl = self.db.get_daily_pnl()
         open_trades = self.db.get_open_trades()
@@ -310,7 +352,44 @@ class TradingBrain:
             f"模式: {TRADING_MODE}"
         )
         logger.info(report)
-        # TODO Phase9: 透過 LINE 發送報告
+        send_line_message(report)
+
+    async def _heartbeat(self) -> None:
+        """心跳檢查（靜默）：僅在異常時發送 LINE 告警"""
+        # 超過 5 分鐘未收到 K 線視為異常
+        stale = (time.time() - self.last_kline_received_at) > 300
+        if stale and self.last_kline_received_at > 0:
+            msg = (
+                "⚠️ TradingBrain 心跳異常: 超過 5 分鐘未收到 K 線數據，"
+                "請檢查 WebSocket 連線或網路。"
+            )
+            logger.warning(msg)
+            send_line_message(msg)
+
+    async def _position_check(self) -> None:
+        """持倉止損/止盈檢查：從快取或 REST 取價，觸及則平倉"""
+        if not self.binance_client:
+            return
+        open_trades = self.db.get_open_trades()
+        if not open_trades:
+            return
+        symbols = {t["symbol"] for t in open_trades}
+        prices: dict[str, float] = {}
+        for sym in symbols:
+            # 優先從 WebSocket 快取取最新價
+            latest = self.ws_feed.cache.get_latest(sym.lower(), "15m") if self.ws_feed else None
+            if latest and "close" in latest:
+                prices[sym] = float(latest["close"])
+            else:
+                try:
+                    p = await self.binance_client.get_ticker_price(sym)
+                    if p is not None:
+                        prices[sym] = p
+                except Exception:
+                    pass
+        await run_position_check(
+            self.db, self.binance_client, prices, risk_manager=self.risk_manager
+        )
 
     async def run(self) -> None:
         """主運行迴圈"""
