@@ -8,7 +8,8 @@ TradingBrain — 加密貨幣自動交易系統
 4. WebSocket K 線數據流
 5. 否決引擎
 6. 技術分析引擎
-7. (未來) 策略 / 風控 / 交易執行 / Web 儀表板
+7. 策略與信號系統（多策略投票 + 否決過濾）
+8. (未來) 風控 / 交易執行 / Web 儀表板
 """
 
 import asyncio
@@ -33,6 +34,10 @@ from core.pipeline.liquidation import LiquidationMonitor
 from core.pipeline.veto_engine import VetoEngine
 from core.analysis.engine import AnalysisEngine
 from core.analysis.chop_detector import detect_chop
+from core.strategy.trend_following import TrendFollowingStrategy
+from core.strategy.mean_reversion import MeanReversionStrategy
+from core.strategy.signal_aggregator import SignalAggregator
+from core.strategy.coin_screener import CoinScreener
 from database.db_manager import DatabaseManager
 
 
@@ -49,6 +54,8 @@ class TradingBrain:
         self.liquidation_monitor: LiquidationMonitor | None = None
         self.veto_engine: VetoEngine | None = None
         self.analysis_engine: AnalysisEngine | None = None
+        self.signal_aggregator: SignalAggregator | None = None
+        self.coin_screener: CoinScreener | None = None
 
     async def startup(self) -> None:
         """系統啟動序列"""
@@ -87,6 +94,19 @@ class TradingBrain:
         # 5. 初始化技術分析引擎
         self.analysis_engine = AnalysisEngine()
         logger.info("技術分析引擎初始化完成")
+
+        # 5b. 初始化策略與信號聚合器
+        strategies = [
+            TrendFollowingStrategy(adx_min=25.0, skip_on_chop=True),
+            MeanReversionStrategy(rsi_oversold=30, rsi_overbought=70, skip_on_chop=True),
+        ]
+        self.signal_aggregator = SignalAggregator(
+            strategies=strategies,
+            veto_engine=self.veto_engine,
+            db=self.db,
+        )
+        self.coin_screener = CoinScreener()
+        logger.info("策略與信號聚合器初始化完成")
 
         # 6. 初始化 WebSocket 數據流
         self.ws_feed = BinanceWebSocketFeed(
@@ -219,6 +239,13 @@ class TradingBrain:
             f"方向={snapshot.get('mtf', {}).get('direction', 'N/A')}, "
             f"信心={snapshot.get('mtf', {}).get('confidence', 0):.0%}"
         )
+
+        # 策略評估 + 否決過濾，通過信號寫入 DB（Phase5 再接入風控與執行）
+        agg_result = self.signal_aggregator.evaluate(full, save_to_db=True)
+        if agg_result.passed:
+            logger.info(f"信號通過否決: {symbol} -> {len(agg_result.passed)} 筆 (Phase5 風控/執行)")
+        if agg_result.vetoed:
+            logger.debug(f"信號被否決: {symbol} -> {len(agg_result.vetoed)} 筆")
 
     async def _daily_report(self) -> None:
         """生成每日績效報告"""

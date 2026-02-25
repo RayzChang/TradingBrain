@@ -1,7 +1,7 @@
 # TradingBrain 專案進度追蹤
 
-> 最後更新: 2026-02-24
-> 當前階段: **第三階段 - 技術分析引擎** (已完成!)
+> 最後更新: 2026-02-25
+> 當前階段: **第四階段 - 策略與信號系統** (已完成!)
 
 ---
 
@@ -46,6 +46,14 @@
   - [x] core/analysis/engine.py — AnalysisEngine 統一入口，整合所有分析模組
   - [x] main.py 整合：K線收盤觸發分析 → 絞肉機結果同步否決引擎 → 15m 觸發 MTF 分析
   - [x] 測試通過：7 項測試（指標/背離/斐波那契/K線型態/絞肉機/MTF/引擎整合）全部 PASS
+- [x] **第四階段：策略與信號系統**
+  - [x] core/strategy/base.py — 策略基類（TradeSignal、BaseStrategy 統一介面）
+  - [x] core/strategy/trend_following.py — 趨勢跟蹤（EMA9/21 交叉 + ADX 門檻，可跳過絞肉機）
+  - [x] core/strategy/mean_reversion.py — 均值回歸（布林帶觸及 + RSI 超買超賣，背離加分）
+  - [x] core/strategy/signal_aggregator.py — 信號聚合器（多策略投票 + 否決引擎過濾，可寫入 signals 表）
+  - [x] core/strategy/coin_screener.py — 幣種篩選器（MTF 信心/HTF RSI/ADX/絞肉機扣分 → score + rank）
+  - [x] main.py 整合：15m MTF 分析後呼叫 aggregator.evaluate(full, save_to_db=True)
+  - [x] 測試通過：tests/test_strategy.py 5 項測試全部 PASS
 
 ## 進行中
 
@@ -53,7 +61,6 @@
 
 ## 待做
 
-- [ ] 第四階段：策略與信號系統
 - [ ] 第五階段：風險管理
 - [ ] 第六階段：Web 儀表板 (React + FastAPI)
 - [ ] 第七階段：回測系統
@@ -67,12 +74,12 @@
 
 ## 下一步
 
-開始第四階段：策略與信號系統
-1. core/strategy/base.py — 策略基類（統一介面）
-2. core/strategy/trend_following.py — 趨勢跟蹤策略（EMA 交叉 + ADX 確認）
-3. core/strategy/mean_reversion.py — 均值回歸策略（BB + RSI 超買超賣）
-4. core/strategy/signal_aggregator.py — 信號聚合器（多策略投票 + 否決引擎過濾）
-5. core/strategy/coin_screener.py — 幣種篩選器（從 watchlist 中選出最佳標的）
+開始第五階段：風險管理核心
+1. core/risk/position_sizer.py — 倉位計算（含最小下單額 10U 保護）
+2. core/risk/stop_loss.py — ATR 動態止損/止盈
+3. core/risk/daily_limits.py — 每日虧損/回撤熔斷
+4. core/risk/cooldown.py — 連虧冷卻機制
+5. 信號通過否決後進入風控 → 通過後再進入執行層（Phase6 後實作）
 
 ## 筆記
 
