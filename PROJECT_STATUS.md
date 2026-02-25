@@ -1,7 +1,7 @@
 # TradingBrain 專案進度追蹤
 
 > 最後更新: 2026-02-25
-> 當前階段: **第六階段 - Web 儀表板** (已完成!)
+> 當前階段: **第七階段 - 回測系統** (已完成!)
 
 ---
 
@@ -72,6 +72,12 @@
   - [x] frontend/ — Vite + React 18 + TypeScript + Tailwind，總覽 / 風控參數 / 信號 / 交易 四頁
   - [x] main.py 啟動時背景執行 API（daemon thread），run_api_only.py 供前端開發
   - [x] README 儀表板啟動說明
+- [x] **第七階段：回測系統**
+  - [x] core/backtest/engine.py — 回測引擎（Parquet 或 DataFrame、0.1% 滑點、0.04% 手續費、策略+風控同實盤）
+  - [x] core/backtest/report.py — 績效報告（總報酬、最大回撤、勝率、交易次數）
+  - [x] run_backtest.py — CLI（--symbol, --tf, --balance, --days 模擬 K 線）
+  - [x] api/routes/backtest.py — POST /api/backtest/run（需 Parquet 存在）
+  - [x] tests/test_backtest.py 通過
 
 ## 進行中
 
@@ -79,7 +85,6 @@
 
 ## 待做
 
-- [ ] 第七階段：回測系統
 - [ ] 第八階段：模擬交易
 - [ ] 第九階段：實盤上線
 
@@ -90,9 +95,8 @@
 
 ## 下一步
 
-開始第七階段：回測系統
-1. 歷史 K 線 Parquet 讀取、回測引擎（0.1% 滑點）、績效報告
-2. 信號通過風控後尚未接執行層（模擬/實盤下單留待 Phase8/9）
+開始第八階段：模擬交易
+1. 幣安 Testnet、模擬下單與持倉追蹤、24/7 運行、LINE 每日報告與心跳
 
 ## 筆記
 

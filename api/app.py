@@ -26,7 +26,7 @@ from config.settings import (
     TRADING_MODE,
     TRADING_INITIAL_BALANCE,
 )
-from api.routes import risk, signals, trades, system
+from api.routes import risk, signals, trades, system, backtest
 
 app = FastAPI(
     title="TradingBrain API",
@@ -59,6 +59,7 @@ app.include_router(risk.router, prefix="/api/risk", tags=["risk"], dependencies=
 app.include_router(signals.router, prefix="/api/signals", tags=["signals"], dependencies=[Depends(verify_credentials)])
 app.include_router(trades.router, prefix="/api/trades", tags=["trades"], dependencies=[Depends(verify_credentials)])
 app.include_router(system.router, prefix="/api/system", tags=["system"], dependencies=[Depends(verify_credentials)])
+app.include_router(backtest.router, prefix="/api/backtest", tags=["backtest"], dependencies=[Depends(verify_credentials)])
 
 
 @app.get("/api/health")
