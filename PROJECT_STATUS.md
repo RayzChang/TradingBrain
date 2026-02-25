@@ -1,7 +1,7 @@
 # TradingBrain 專案進度追蹤
 
 > 最後更新: 2026-02-25
-> 當前階段: **第五階段 - 風險管理核心** (已完成!)
+> 當前階段: **第六階段 - Web 儀表板** (已完成!)
 
 ---
 
@@ -64,6 +64,14 @@
   - [x] config/settings.py — TRADING_INITIAL_BALANCE（Phase6+ 改為交易所餘額）
   - [x] main.py：通過否決信號進入 risk_manager.evaluate，通過則 log「待執行層下單」
   - [x] 測試通過：tests/test_risk.py 6 項測試全部 PASS
+- [x] **第六階段：Web 儀表板 (React + FastAPI)**
+  - [x] api/app.py — FastAPI 應用、CORS、HTTP Basic 認證
+  - [x] api/routes/ — risk（參數讀寫、預設方案載入）、signals、trades、system/status
+  - [x] api/deps.py — get_db 單例
+  - [x] database get_recent_signals
+  - [x] frontend/ — Vite + React 18 + TypeScript + Tailwind，總覽 / 風控參數 / 信號 / 交易 四頁
+  - [x] main.py 啟動時背景執行 API（daemon thread），run_api_only.py 供前端開發
+  - [x] README 儀表板啟動說明
 
 ## 進行中
 
@@ -71,7 +79,6 @@
 
 ## 待做
 
-- [ ] 第六階段：Web 儀表板 (React + FastAPI)
 - [ ] 第七階段：回測系統
 - [ ] 第八階段：模擬交易
 - [ ] 第九階段：實盤上線
@@ -83,10 +90,9 @@
 
 ## 下一步
 
-開始第六階段：Web 儀表板 (React + FastAPI)
-1. api/ FastAPI 應用、REST 端點（風控參數、信號、持倉、系統狀態）
-2. frontend/ React + TypeScript + Tailwind，風控參數調整、K 線與信號看板
-3. 信號通過風控後尚未接執行層（模擬/實盤下單留待 Phase7/8/9）
+開始第七階段：回測系統
+1. 歷史 K 線 Parquet 讀取、回測引擎（0.1% 滑點）、績效報告
+2. 信號通過風控後尚未接執行層（模擬/實盤下單留待 Phase8/9）
 
 ## 筆記
 

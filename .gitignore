@@ -43,6 +43,9 @@ frontend/node_modules/
 frontend/dist/
 frontend/build/
 frontend/.next/
+frontend/*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js
 
 # Cursor (keep rules, ignore plans)
 .cursor/plans/

@@ -26,9 +26,23 @@ copy .env.example .env
 
 ### 3. 啟動
 
+**完整系統（交易邏輯 + 儀表板 API）**
+
 ```bash
 python main.py
 ```
+
+**僅儀表板（前端開發用）**
+
+```bash
+# 終端 1：只開 API
+python run_api_only.py
+
+# 終端 2：前端
+cd frontend && npm install && npm run dev
+```
+
+瀏覽器開啟 http://localhost:5173 ，預設帳密 `admin` / `changeme`（可在 .env 設定 DASHBOARD_USERNAME / DASHBOARD_PASSWORD）。
 
 ## 系統架構
 
@@ -42,7 +56,7 @@ python main.py
 - Python 3.11+ / FastAPI / APScheduler
 - React 18 + TypeScript + TailwindCSS
 - SQLite-WAL + Parquet
-- ccxt + python-binance + pandas-ta
+- ccxt + python-binance + ta（技術分析）
 
 ## AI 協作
 

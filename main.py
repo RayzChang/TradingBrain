@@ -10,12 +10,14 @@ TradingBrain — 加密貨幣自動交易系統
 6. 技術分析引擎
 7. 策略與信號系統（多策略投票 + 否決過濾）
 8. 風險管理核心（倉位/止損/熔斷/冷卻）
-9. (未來) 交易執行 / Web 儀表板
+9. Web 儀表板 API（FastAPI，與主程式同進程背景執行）
+10. (未來) 交易執行
 """
 
 import asyncio
 import json
 import signal
+import threading
 import time
 from pathlib import Path
 
@@ -25,6 +27,7 @@ from loguru import logger
 from config.settings import (
     TRADING_MODE, DB_PATH, KLINE_DATA_DIR,
     SCHEDULER_CONFIG, DEFAULT_WATCHLIST,
+    API_PORT,
 )
 from core.logger_setup import setup_logger
 from core.data.websocket_feed import BinanceWebSocketFeed
@@ -132,6 +135,19 @@ class TradingBrain:
         logger.info(f"資料庫: {DB_PATH}")
         logger.info(f"監控幣種: {', '.join(DEFAULT_WATCHLIST)}")
         logger.info(f"交易模式: {TRADING_MODE}")
+
+        # 8. 啟動 Web API（儀表板後端，背景執行）
+        def _run_api():
+            import uvicorn
+            uvicorn.run(
+                "api.app:app",
+                host="0.0.0.0",
+                port=API_PORT,
+                log_level="warning",
+            )
+        api_thread = threading.Thread(target=_run_api, daemon=True)
+        api_thread.start()
+        logger.info(f"儀表板 API: http://0.0.0.0:{API_PORT} （前端請另開 npm run dev 並開 http://localhost:5173）")
 
     def _load_risk_defaults(self) -> None:
         """從 risk_defaults.json 載入預設風控參數"""

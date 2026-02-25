@@ -209,6 +209,23 @@ class DatabaseManager:
             conn.commit()
             return cursor.lastrowid
 
+    def get_recent_signals(self, limit: int = 50) -> list[dict]:
+        """取得最近 N 筆信號（供儀表板）"""
+        rows = self.execute(
+            "SELECT * FROM signals ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+        result = []
+        for r in rows:
+            d = dict(r)
+            if d.get("indicators") and isinstance(d["indicators"], str):
+                try:
+                    d["indicators"] = json.loads(d["indicators"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            result.append(d)
+        return result
+
     # === Market Info ===
 
     def save_market_info(
