@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from api.deps import get_db
 from database.db_manager import DatabaseManager
@@ -34,7 +34,7 @@ def get_presets():
 @router.put("/{param_name}")
 def set_param(
     param_name: str,
-    body: dict,
+    body: dict = Body(...),
     db: DatabaseManager = Depends(get_db),
 ):
     """更新單一風控參數。body: { "value": <any>, "changed_by": "dashboard" }"""
@@ -48,7 +48,7 @@ def set_param(
 
 @router.post("/load-preset")
 def load_preset(
-    body: dict,
+    body: dict = Body(...),
     db: DatabaseManager = Depends(get_db),
 ):
     """載入預設方案。body: { "preset": "conservative" | "moderate" | "aggressive" }"""

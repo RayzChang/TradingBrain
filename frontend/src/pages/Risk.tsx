@@ -17,7 +17,8 @@ export default function Risk() {
       .then(([p, pr]) => {
         setParams(p);
         setPresets(pr.presets as Presets);
-        setActivePreset(pr.active_preset);
+        // 優先使用 DB 的 active_preset（剛載入的預設），否則用 JSON 檔的
+        setActivePreset((p.active_preset as string) ?? pr.active_preset ?? null);
       })
       .catch((e) => setErr(String(e)));
   };
@@ -41,7 +42,9 @@ export default function Risk() {
     try {
       await riskApi.loadPreset(preset);
       setActivePreset(preset);
-      load();
+      // 只重拉參數（用 DB 的 active_preset），不要被 presets 檔案覆蓋
+      const p = await riskApi.getParams();
+      setParams(p);
     } catch (e) {
       setErr(String(e));
     }
