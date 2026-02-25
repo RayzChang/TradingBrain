@@ -128,6 +128,21 @@ class DatabaseManager:
         )
         return rows[0]["total"] if rows else 0.0
 
+    def get_total_realized_pnl(self) -> float:
+        """計算全部已平倉累計損益"""
+        rows = self.execute(
+            "SELECT COALESCE(SUM(pnl), 0) as total FROM trades WHERE status='CLOSED'"
+        )
+        return rows[0]["total"] if rows else 0.0
+
+    def get_recent_closed_trades(self, limit: int = 20) -> list[dict]:
+        """取得最近 N 筆已平倉交易（按平倉時間倒序，供連虧冷卻判斷）"""
+        rows = self.execute(
+            "SELECT * FROM trades WHERE status='CLOSED' ORDER BY closed_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in rows]
+
     # === Risk Parameters ===
 
     def get_risk_params(self) -> dict[str, Any]:

@@ -39,6 +39,10 @@ API_HOST = "0.0.0.0"
 API_PORT = 8888
 
 
+# === Trading (Phase5+ 風控/執行用，實盤時由交易所餘額覆蓋) ===
+TRADING_INITIAL_BALANCE = float(os.getenv("TRADING_INITIAL_BALANCE", "300"))
+
+
 # === Database ===
 DB_PATH = BASE_DIR / "data" / "trading_brain.db"
 KLINE_DATA_DIR = BASE_DIR / "data" / "klines"

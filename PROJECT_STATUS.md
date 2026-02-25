@@ -1,7 +1,7 @@
 # TradingBrain 專案進度追蹤
 
 > 最後更新: 2026-02-25
-> 當前階段: **第四階段 - 策略與信號系統** (已完成!)
+> 當前階段: **第五階段 - 風險管理核心** (已完成!)
 
 ---
 
@@ -54,6 +54,16 @@
   - [x] core/strategy/coin_screener.py — 幣種篩選器（MTF 信心/HTF RSI/ADX/絞肉機扣分 → score + rank）
   - [x] main.py 整合：15m MTF 分析後呼叫 aggregator.evaluate(full, save_to_db=True)
   - [x] 測試通過：tests/test_strategy.py 5 項測試全部 PASS
+- [x] **第五階段：風險管理核心**
+  - [x] core/risk/position_sizer.py — 倉位計算（每筆風險%、ATR 止損距離）+ 最小下單額 10U 保護，max_open_positions 自適應
+  - [x] core/risk/stop_loss.py — ATR 動態止損/止盈 + 最低風報比檢查
+  - [x] core/risk/daily_limits.py — 每日虧損熔斷、回撤熔斷（equity_high_water_mark 可更新）
+  - [x] core/risk/cooldown.py — 連虧冷卻（max_consecutive_losses + cool_down_after_loss_sec）
+  - [x] core/risk/risk_manager.py — 風控總入口：熔斷→冷卻→持倉數→倉位→止損止盈
+  - [x] database/db_manager.py — get_total_realized_pnl、get_recent_closed_trades
+  - [x] config/settings.py — TRADING_INITIAL_BALANCE（Phase6+ 改為交易所餘額）
+  - [x] main.py：通過否決信號進入 risk_manager.evaluate，通過則 log「待執行層下單」
+  - [x] 測試通過：tests/test_risk.py 6 項測試全部 PASS
 
 ## 進行中
 
@@ -61,7 +71,6 @@
 
 ## 待做
 
-- [ ] 第五階段：風險管理
 - [ ] 第六階段：Web 儀表板 (React + FastAPI)
 - [ ] 第七階段：回測系統
 - [ ] 第八階段：模擬交易
@@ -74,12 +83,10 @@
 
 ## 下一步
 
-開始第五階段：風險管理核心
-1. core/risk/position_sizer.py — 倉位計算（含最小下單額 10U 保護）
-2. core/risk/stop_loss.py — ATR 動態止損/止盈
-3. core/risk/daily_limits.py — 每日虧損/回撤熔斷
-4. core/risk/cooldown.py — 連虧冷卻機制
-5. 信號通過否決後進入風控 → 通過後再進入執行層（Phase6 後實作）
+開始第六階段：Web 儀表板 (React + FastAPI)
+1. api/ FastAPI 應用、REST 端點（風控參數、信號、持倉、系統狀態）
+2. frontend/ React + TypeScript + Tailwind，風控參數調整、K 線與信號看板
+3. 信號通過風控後尚未接執行層（模擬/實盤下單留待 Phase7/8/9）
 
 ## 筆記
 

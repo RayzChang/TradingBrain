@@ -9,7 +9,8 @@ TradingBrain — 加密貨幣自動交易系統
 5. 否決引擎
 6. 技術分析引擎
 7. 策略與信號系統（多策略投票 + 否決過濾）
-8. (未來) 風控 / 交易執行 / Web 儀表板
+8. 風險管理核心（倉位/止損/熔斷/冷卻）
+9. (未來) 交易執行 / Web 儀表板
 """
 
 import asyncio
@@ -38,6 +39,8 @@ from core.strategy.trend_following import TrendFollowingStrategy
 from core.strategy.mean_reversion import MeanReversionStrategy
 from core.strategy.signal_aggregator import SignalAggregator
 from core.strategy.coin_screener import CoinScreener
+from core.risk.risk_manager import RiskManager
+from config.settings import TRADING_INITIAL_BALANCE
 from database.db_manager import DatabaseManager
 
 
@@ -56,6 +59,7 @@ class TradingBrain:
         self.analysis_engine: AnalysisEngine | None = None
         self.signal_aggregator: SignalAggregator | None = None
         self.coin_screener: CoinScreener | None = None
+        self.risk_manager: RiskManager | None = None
 
     async def startup(self) -> None:
         """系統啟動序列"""
@@ -107,6 +111,10 @@ class TradingBrain:
         )
         self.coin_screener = CoinScreener()
         logger.info("策略與信號聚合器初始化完成")
+
+        # 5c. 初始化風控核心
+        self.risk_manager = RiskManager(self.db)
+        logger.info("風控核心初始化完成")
 
         # 6. 初始化 WebSocket 數據流
         self.ws_feed = BinanceWebSocketFeed(
@@ -240,12 +248,36 @@ class TradingBrain:
             f"信心={snapshot.get('mtf', {}).get('confidence', 0):.0%}"
         )
 
-        # 策略評估 + 否決過濾，通過信號寫入 DB（Phase5 再接入風控與執行）
+        # 策略評估 + 否決過濾，通過信號寫入 DB
         agg_result = self.signal_aggregator.evaluate(full, save_to_db=True)
         if agg_result.passed:
-            logger.info(f"信號通過否決: {symbol} -> {len(agg_result.passed)} 筆 (Phase5 風控/執行)")
+            logger.info(f"信號通過否決: {symbol} -> {len(agg_result.passed)} 筆")
         if agg_result.vetoed:
             logger.debug(f"信號被否決: {symbol} -> {len(agg_result.vetoed)} 筆")
+
+        # 風控評估：通過否決的信號進入風控（倉位/止損/熔斷/冷卻）
+        primary = full.single_tf_results.get(full.primary_tf)
+        if not primary or primary.df_enriched is None:
+            primary = None
+        balance = TRADING_INITIAL_BALANCE  # Phase6+ 改為交易所餘額
+        open_trades = self.db.get_open_trades()
+        for sig in agg_result.passed:
+            entry_price = primary.df_enriched["close"].iloc[-1] if primary else 0
+            atr_val = primary.indicators.get("atr") if primary else None
+            if atr_val is None and primary and primary.df_enriched is not None:
+                atr_val = primary.df_enriched["atr"].iloc[-1]
+            atr = float(atr_val) if atr_val is not None else 0
+            if primary and entry_price is not None and atr:
+                risk_result = self.risk_manager.evaluate(
+                    sig, balance, float(entry_price), atr, len(open_trades)
+                )
+                if risk_result.passed:
+                    logger.info(
+                        f"風控通過: {sig.symbol} {sig.signal_type} "
+                        f"size={risk_result.size_usdt}U sl={risk_result.stop_loss} (待執行層下單)"
+                    )
+                else:
+                    logger.info(f"風控攔截: {sig.symbol} {sig.signal_type} - {risk_result.reason}")
 
     async def _daily_report(self) -> None:
         """生成每日績效報告"""
