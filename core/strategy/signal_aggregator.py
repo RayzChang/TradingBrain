@@ -72,7 +72,9 @@ class SignalAggregator:
             candidates.extend(sigs)
 
         if not candidates:
-            logger.debug(f"{full.symbol} no candidate signals from {len(self.strategies)} strategies")
+            logger.info(
+                f"{full.symbol} 無候選信號（{len(self.strategies)} 個策略均未觸發）"
+            )
             return AggregatorResult()
 
         passed: list[TradeSignal] = []

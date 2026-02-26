@@ -21,7 +21,7 @@ class TrendFollowingStrategy(BaseStrategy):
 
     def __init__(
         self,
-        adx_min: float = 25.0,
+        adx_min: float = 20.0,
         skip_on_chop: bool = True,
     ) -> None:
         self.adx_min = adx_min

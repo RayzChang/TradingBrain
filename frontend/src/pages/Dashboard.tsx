@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { systemApi } from "../api";
+import { systemApi, tradesApi } from "../api";
 
 export default function Dashboard() {
   const [status, setStatus] = useState<{
@@ -9,6 +9,7 @@ export default function Dashboard() {
     daily_pnl: number;
     open_positions_count: number;
   } | null>(null);
+  const [totalUnrealized, setTotalUnrealized] = useState<number | null>(null);
   const [err, setErr] = useState("");
 
   useEffect(() => {
@@ -16,12 +17,17 @@ export default function Dashboard() {
       .status()
       .then(setStatus)
       .catch((e) => setErr(String(e)));
+    tradesApi
+      .openWithPnl()
+      .then((r) => setTotalUnrealized(r.total_unrealized_pnl))
+      .catch(() => setTotalUnrealized(null));
   }, []);
 
   if (err) return <p className="text-[var(--red)]">無法載入：{err}</p>;
   if (!status) return <p className="text-[var(--muted)]">載入中…</p>;
 
   const equity = status.initial_balance + status.total_realized_pnl;
+  const equityWithUnrealized = totalUnrealized != null ? equity + totalUnrealized : null;
 
   return (
     <div>
@@ -30,11 +36,18 @@ export default function Dashboard() {
         <Card title="模式" value={status.mode.toUpperCase()} />
         <Card title="參考餘額" value={`${status.initial_balance} USDT`} />
         <Card
-          title="今日損益"
+          title="今日已實現損益"
           value={`${status.daily_pnl >= 0 ? "+" : ""}${status.daily_pnl.toFixed(2)} USDT`}
           valueClass={status.daily_pnl >= 0 ? "text-[var(--green)]" : "text-[var(--red)]"}
         />
         <Card title="未平倉數" value={String(status.open_positions_count)} />
+        {totalUnrealized !== null && (
+          <Card
+            title="未實現損益"
+            value={`${totalUnrealized >= 0 ? "+" : ""}${totalUnrealized.toFixed(2)} USDT`}
+            valueClass={totalUnrealized >= 0 ? "text-[var(--green)]" : "text-[var(--red)]"}
+          />
+        )}
       </div>
       <div className="mt-6 p-4 rounded-lg bg-[var(--card)] border border-[var(--border)]">
         <h3 className="font-semibold mb-2">累計已實現損益</h3>
@@ -44,6 +57,9 @@ export default function Dashboard() {
         </p>
         <p className="text-sm text-[var(--muted)] mt-1">
           權益參考 = {status.initial_balance} + {status.total_realized_pnl.toFixed(2)} = {equity.toFixed(2)} USDT
+          {equityWithUnrealized != null && (
+            <> · 含未實現 ≈ {equityWithUnrealized.toFixed(2)} USDT</>
+          )}
         </p>
       </div>
     </div>

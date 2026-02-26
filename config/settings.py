@@ -17,8 +17,9 @@ BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 BINANCE_TESTNET = os.getenv("BINANCE_TESTNET", "true").lower() == "true"
 
-BINANCE_TESTNET_REST = "https://testnet.binancefuture.com"
-BINANCE_TESTNET_WS = "wss://stream.binancefuture.com"
+# 依 Binance 最新文件，Futures Demo/Testnet 使用 demo-fapi.binance.com
+BINANCE_TESTNET_REST = "https://demo-fapi.binance.com"
+BINANCE_TESTNET_WS = "wss://fstream.binancefuture.com"
 BINANCE_LIVE_REST = "https://fapi.binance.com"
 BINANCE_LIVE_WS = "wss://fstream.binance.com"
 
@@ -88,3 +89,10 @@ DEFAULT_WATCHLIST = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
 ]
+
+# === 全倉/逐倉與預設槓桿（跑機器人前可用 setup_testnet.py 寫入交易所）===
+# 全倉=CROSSED，逐倉=ISOLATED
+MARGIN_TYPE = os.getenv("MARGIN_TYPE", "CROSSED").upper()
+if MARGIN_TYPE not in ("CROSSED", "ISOLATED"):
+    MARGIN_TYPE = "CROSSED"
+DEFAULT_LEVERAGE = int(os.getenv("DEFAULT_LEVERAGE", "2"))

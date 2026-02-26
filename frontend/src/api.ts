@@ -45,6 +45,8 @@ export const signalsApi = {
 
 export const tradesApi = {
   open: () => api<unknown[]>("/trades/open"),
+  openWithPnl: () =>
+    api<{ open_trades: unknown[]; total_unrealized_pnl: number }>("/trades/open-with-pnl"),
   today: () => api<unknown[]>("/trades/today"),
   dailyPnl: () => api<{ daily_pnl: number }>("/trades/daily-pnl"),
   recent: (limit = 20) => api<unknown[]>("/trades/recent?limit=" + limit),

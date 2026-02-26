@@ -164,6 +164,21 @@ class BinanceFuturesClient:
         )
         logger.info(f"Leverage set: {symbol} -> {leverage}x")
 
+    async def set_margin_type(self, symbol: str, margin_type: str) -> None:
+        """設定全倉/逐倉。margin_type 為 'CROSSED'（全倉）或 'ISOLATED'（逐倉）。"""
+        await self._request(
+            "POST",
+            "/fapi/v1/marginType",
+            params={"symbol": symbol, "marginType": margin_type.upper()},
+            weight=1,
+            is_order=True,
+        )
+        logger.info(f"Margin type set: {symbol} -> {margin_type}")
+
+    async def get_account_info(self) -> dict:
+        """取得帳戶資訊（餘額、持倉、保證金模式等）"""
+        return await self._request("GET", "/fapi/v2/account", weight=5)
+
     async def _format_quantity(self, symbol: str, quantity: float) -> str:
         """依交易所規則格式化數量"""
         info = await self._get_exchange_info_symbol(symbol)

@@ -122,8 +122,8 @@ class BinanceWebSocketFeed:
                 candle = self._parse_kline(data)
                 symbol = candle["symbol"]
                 tf = candle["timeframe"]
-
-                self.cache.update(symbol, tf, candle)
+                # 與 main 讀取一致：一律用 lowercase 當 cache key
+                self.cache.update(symbol.lower(), tf, candle)
 
                 if candle["is_closed"] and self.on_kline:
                     try:

@@ -32,6 +32,7 @@ from config.settings import (
 )
 from core.logger_setup import setup_logger
 from core.data.websocket_feed import BinanceWebSocketFeed
+from core.data.market_data import MarketDataFetcher
 from core.pipeline.scheduler import TaskScheduler
 from core.pipeline.funding_rate import FundingRateMonitor
 from core.pipeline.fear_greed import FearGreedMonitor
@@ -108,10 +109,12 @@ class TradingBrain:
         self.analysis_engine = AnalysisEngine()
         logger.info("技術分析引擎初始化完成")
 
-        # 5b. 初始化策略與信號聚合器
+        # 5b. 初始化策略與信號聚合器（Testnet: 稍微放寬條件）
         strategies = [
-            TrendFollowingStrategy(adx_min=25.0, skip_on_chop=True),
-            MeanReversionStrategy(rsi_oversold=30, rsi_overbought=70, skip_on_chop=True),
+            # 趨勢跟蹤：降低 ADX 門檻到 20，仍跳過絞肉機行情
+            TrendFollowingStrategy(adx_min=20.0, skip_on_chop=True),
+            # 均值回歸：在橫盤/絞肉機行情仍可出手（不再因 chop 被過濾）
+            MeanReversionStrategy(rsi_oversold=30, rsi_overbought=70, skip_on_chop=False),
         ]
         self.signal_aggregator = SignalAggregator(
             strategies=strategies,
@@ -184,6 +187,49 @@ class TradingBrain:
                 "active_preset", active_preset, changed_by="system_default"
             )
             logger.info(f"風控預設方案: {label} ({active_preset})")
+
+    async def _preload_kline_cache(self) -> None:
+        """啟動時用 REST 拉取 15m/1h/4h 歷史 K 線灌入 cache，否則 MTF 要等數天才有足夠根數。"""
+        fetcher = MarketDataFetcher()
+        min_bars = 50
+        timeframes = ["15m", "1h", "4h"]
+        try:
+            for symbol in DEFAULT_WATCHLIST:
+                for tf in timeframes:
+                    try:
+                        df = await fetcher.fetch_klines(symbol, tf, limit=100)
+                        if df.empty or len(df) < min_bars:
+                            logger.warning(f"預載 {symbol} {tf}: 僅 {len(df)} 根，跳過")
+                            continue
+                        key = symbol.lower()
+                        for _, row in df.iterrows():
+                            ot = row["open_time"]
+                            ct = row["close_time"]
+                            open_ms = int(ot.timestamp() * 1000) if hasattr(ot, "timestamp") else int(ot)
+                            close_ms = int(ct.timestamp() * 1000) if hasattr(ct, "timestamp") else int(ct)
+                            candle = {
+                                "symbol": symbol,
+                                "timeframe": tf,
+                                "open_time": open_ms,
+                                "open": float(row["open"]),
+                                "high": float(row["high"]),
+                                "low": float(row["low"]),
+                                "close": float(row["close"]),
+                                "volume": float(row["volume"]),
+                                "close_time": close_ms,
+                                "quote_volume": float(row.get("quote_volume", 0)),
+                                "trades": int(row.get("trades", 0)),
+                                "taker_buy_volume": float(row.get("taker_buy_volume", 0)),
+                                "taker_buy_quote_volume": float(row.get("taker_buy_quote_volume", 0)),
+                                "is_closed": True,
+                            }
+                            self.ws_feed.cache.update(key, tf, candle)
+                        logger.info(f"預載 {symbol} {tf}: {len(df)} 根")
+                    except Exception as e:
+                        logger.warning(f"預載 {symbol} {tf} 失敗: {e}")
+            await fetcher.close()
+        except Exception as e:
+            logger.warning(f"預載 K 線 cache 失敗: {e}")
 
     def _register_scheduled_tasks(self) -> None:
         """註冊所有定時任務到排程器"""
@@ -268,10 +314,13 @@ class TradingBrain:
     async def _run_mtf_analysis(self, symbol: str) -> None:
         """執行完整多時間框架分析"""
         kline_data: dict[str, pd.DataFrame] = {}
-
-        for tf in ["5m", "15m", "1h", "4h"]:
+        # 只使用有訂閱的 15m/1h/4h（不要求 5m），每 TF 至少 50 根
+        for tf in ["15m", "1h", "4h"]:
             cache_candles = self.ws_feed.cache.get(symbol.lower(), tf)
             if len(cache_candles) < 50:
+                logger.debug(
+                    f"MTF 跳過 {symbol}: {tf} 僅 {len(cache_candles)} 根 (需 50)"
+                )
                 continue
             df = pd.DataFrame(cache_candles)
             for col in ("open", "high", "low", "close", "volume"):
@@ -280,6 +329,9 @@ class TradingBrain:
             kline_data[tf] = df
 
         if len(kline_data) < 2:
+            logger.debug(
+                f"MTF 跳過 {symbol}: 僅 {len(kline_data)} 個 TF 達 50 根 (需至少 2)"
+            )
             return
 
         full = self.analysis_engine.analyze_full(symbol, kline_data)
@@ -297,7 +349,10 @@ class TradingBrain:
         if agg_result.passed:
             logger.info(f"信號通過否決: {symbol} -> {len(agg_result.passed)} 筆")
         if agg_result.vetoed:
-            logger.debug(f"信號被否決: {symbol} -> {len(agg_result.vetoed)} 筆")
+            logger.info(
+                f"信號被否決: {symbol} -> {len(agg_result.vetoed)} 筆 "
+                f"(通過 {len(agg_result.passed)} 筆)"
+            )
 
         # 風控評估：通過否決的信號進入風控（倉位/止損/熔斷/冷卻）
         primary = full.single_tf_results.get(full.primary_tf)
@@ -404,6 +459,9 @@ class TradingBrain:
             self.liquidation_monitor.fetch_and_store(),
             return_exceptions=True,
         )
+
+        # 預載歷史 K 線到 cache，否則 MTF 要等數天才有足夠 4h 根數
+        await self._preload_kline_cache()
 
         # 啟動 WebSocket（在背景執行）
         ws_task = asyncio.create_task(self.ws_feed.start())
