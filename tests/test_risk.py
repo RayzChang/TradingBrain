@@ -74,7 +74,7 @@ def test_stop_loss_calculator():
 def test_daily_limits_checker():
     print("\n=== 測試每日熔斷 ===")
     db = MagicMock()
-    db.get_risk_params.return_value = {"max_daily_loss": 0.05, "max_drawdown": 0.15}
+    db.get_risk_params.return_value = {"max_daily_loss": 0.05, "max_drawdown": 0.15, "daily_profit_target": 0.0}
     db.get_daily_pnl.return_value = 0.0
     checker = DailyLimitsChecker(db)
     result = checker.can_open(current_balance=300)
@@ -85,6 +85,13 @@ def test_daily_limits_checker():
     result2 = checker.can_open(current_balance=300)
     assert result2.can_open is False
     assert "今日虧損" in result2.reason or "上限" in result2.reason
+
+    # 獲利達標鎖利：今日獲利 >= 當日起始權益 × daily_profit_target → 不開新倉
+    db.get_risk_params.return_value = {"max_daily_loss": 0.05, "max_drawdown": 0.15, "daily_profit_target": 0.10}
+    db.get_daily_pnl.return_value = 600.0  # 當日起始 5000，現在 5600，600 >= 5000*0.1=500
+    result3 = checker.can_open(current_balance=5600)
+    assert result3.can_open is False
+    assert "獲利" in result3.reason or "鎖利" in result3.reason
     print("  [PASS]")
 
 

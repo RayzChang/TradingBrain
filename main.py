@@ -25,6 +25,7 @@ import pandas as pd
 from loguru import logger
 
 from config.settings import (
+    BINANCE_TESTNET,
     TRADING_MODE, DB_PATH, KLINE_DATA_DIR,
     SCHEDULER_CONFIG, DEFAULT_WATCHLIST,
     API_PORT,
@@ -40,11 +41,14 @@ from core.pipeline.liquidation import LiquidationMonitor
 from core.pipeline.veto_engine import VetoEngine
 from core.analysis.engine import AnalysisEngine
 from core.analysis.chop_detector import detect_chop
+from core.strategy.base import TradeSignal
 from core.strategy.trend_following import TrendFollowingStrategy
 from core.strategy.mean_reversion import MeanReversionStrategy
+from core.strategy.breakout import BreakoutStrategy
 from core.strategy.signal_aggregator import SignalAggregator
 from core.strategy.coin_screener import CoinScreener
-from core.risk.risk_manager import RiskManager
+from core.risk.risk_manager import RiskManager, RiskCheckResult
+from core.brain import get_overrides as brain_get_overrides
 from core.execution.execution_engine import execute_trade, is_trading_enabled
 from core.execution.binance_client import BinanceFuturesClient
 from core.execution.position_manager import sync_positions_from_exchange, run_position_check
@@ -70,6 +74,8 @@ class TradingBrain:
         self.risk_manager: RiskManager | None = None
         self.binance_client: BinanceFuturesClient | None = None
         self.last_kline_received_at: float = 0.0  # 供心跳檢查用
+        self._startup_time: float = 0.0
+        self._testnet_fallback_done: bool = False  # Testnet 保底開單僅觸發一次
 
     async def startup(self) -> None:
         """系統啟動序列"""
@@ -109,20 +115,14 @@ class TradingBrain:
         self.analysis_engine = AnalysisEngine()
         logger.info("技術分析引擎初始化完成")
 
-        # 5b. 初始化策略與信號聚合器（Testnet: 稍微放寬條件）
-        strategies = [
-            # 趨勢跟蹤：降低 ADX 門檻到 20，仍跳過絞肉機行情
-            TrendFollowingStrategy(adx_min=20.0, skip_on_chop=True),
-            # 均值回歸：在橫盤/絞肉機行情仍可出手（不再因 chop 被過濾）
-            MeanReversionStrategy(rsi_oversold=30, rsi_overbought=70, skip_on_chop=False),
-        ]
+        # 5b. 策略與信號聚合器 — 參數由大腦覆寫，運行中每 15 分鐘熱重載
         self.signal_aggregator = SignalAggregator(
-            strategies=strategies,
+            strategies=self._strategies_from_brain(),
             veto_engine=self.veto_engine,
             db=self.db,
         )
         self.coin_screener = CoinScreener()
-        logger.info("策略與信號聚合器初始化完成")
+        logger.info("策略與信號聚合器初始化完成（參數由大腦驅動）")
 
         # 5c. 初始化風控核心
         self.risk_manager = RiskManager(self.db)
@@ -150,6 +150,7 @@ class TradingBrain:
                 self.binance_client = None
 
         self.running = True
+        self._startup_time = time.time()
         logger.info("TradingBrain 啟動完成！")
         logger.info(f"資料庫: {DB_PATH}")
         logger.info(f"監控幣種: {', '.join(DEFAULT_WATCHLIST)}")
@@ -187,6 +188,26 @@ class TradingBrain:
                 "active_preset", active_preset, changed_by="system_default"
             )
             logger.info(f"風控預設方案: {label} ({active_preset})")
+
+    def _strategies_from_brain(self) -> list:
+        """依大腦覆寫參數組出策略實例，供啟動與定時熱重載使用"""
+        o = brain_get_overrides()
+        adx_min = float(o.get("adx_min", 15.0))
+        skip_chop = bool(o.get("skip_on_chop", False))
+        rsi_low = float(o.get("rsi_oversold", 35.0))
+        rsi_high = float(o.get("rsi_overbought", 65.0))
+        return [
+            TrendFollowingStrategy(adx_min=adx_min, skip_on_chop=skip_chop),
+            MeanReversionStrategy(rsi_oversold=rsi_low, rsi_overbought=rsi_high, skip_on_chop=skip_chop),
+            BreakoutStrategy(skip_on_chop=skip_chop),
+        ]
+
+    def _rebuild_strategies_from_brain(self) -> None:
+        """定時呼叫：用大腦當前參數替換聚合器內策略，無需重啟程式"""
+        if self.signal_aggregator is None:
+            return
+        self.signal_aggregator.strategies = self._strategies_from_brain()
+        logger.debug("策略已依大腦狀態熱重載")
 
     async def _preload_kline_cache(self) -> None:
         """啟動時用 REST 拉取 15m/1h/4h 歷史 K 線灌入 cache，否則 MTF 要等數天才有足夠根數。"""
@@ -251,8 +272,8 @@ class TradingBrain:
             minutes=60, description="恐懼貪婪指數",
         )
 
-        # 持倉/止損檢查 - 每 1 分鐘（模擬或實盤）
-        if is_trading_enabled():
+        # 持倉/止損檢查 - 每 1 分鐘（paper 模式也需要，用來模擬平倉結算）
+        if is_trading_enabled() or TRADING_MODE == "paper":
             self.scheduler.add_interval_task(
                 "position_check", self._position_check,
                 minutes=SCHEDULER_CONFIG["position_check"]["interval_min"],
@@ -263,6 +284,19 @@ class TradingBrain:
             "heartbeat", self._heartbeat,
             minutes=SCHEDULER_CONFIG["heartbeat"]["interval_min"],
             description="LINE 心跳(靜默)",
+        )
+
+        # 監控快報 - 每 60 分鐘發一則 LINE（今日損益/筆數/未平倉），讓你被動收到監控數據
+        self.scheduler.add_interval_task(
+            "monitor_report", self._monitor_report,
+            minutes=SCHEDULER_CONFIG["monitor_report"]["interval_min"],
+            description="監控快報(LINE)",
+        )
+
+        # 大腦熱重載 - 每 15 分鐘用 data/brain_state.json 覆寫策略參數，無需重啟
+        self.scheduler.add_interval_task(
+            "brain_reload", self._brain_reload,
+            minutes=15, description="大腦狀態熱重載",
         )
 
         # 每日報告 - 每天 UTC 00:00
@@ -390,6 +424,73 @@ class TradingBrain:
                 else:
                     logger.info(f"風控攔截: {sig.symbol} {sig.signal_type} - {risk_result.reason}")
 
+        # 保底開單（僅觸發一次）：避免長時間 0 倉，讓整條流程可被驗證/訓練
+        if (
+            (BINANCE_TESTNET or TRADING_MODE == "paper")
+            and (is_trading_enabled() or TRADING_MODE == "paper")
+            and not self._testnet_fallback_done
+            and (time.time() - self._startup_time) >= (20 * 60 if TRADING_MODE == "paper" else 90 * 60)
+            and len(self.db.get_open_trades()) == 0
+        ):
+            await self._try_testnet_fallback_order()
+
+    async def _try_testnet_fallback_order(self) -> None:
+        """Testnet 專用：一次小額 BTCUSDT LONG 以驗證下單流程（僅觸發一次）"""
+        self._testnet_fallback_done = True
+        symbol = "BTCUSDT"
+        cache_candles = self.ws_feed.cache.get(symbol.lower(), "15m") if self.ws_feed else []
+        if len(cache_candles) < 10:
+            logger.warning("Testnet 保底開單跳過: BTCUSDT 15m 快取不足")
+            return
+        last_c = cache_candles[-1]
+        entry_price = float(last_c.get("close", 0))
+        if not entry_price or entry_price <= 0:
+            logger.warning("Testnet 保底開單跳過: 無法取得價格")
+            return
+        # 小額 15U 名義、2x 槓桿，止損/止盈各約 0.5%
+        size_usdt = 15.0
+        sl = entry_price * 0.995
+        tp = entry_price * 1.01
+        sig = TradeSignal(
+            symbol=symbol,
+            timeframe="15m",
+            signal_type="LONG",
+            strength=0.5,
+            strategy_name="testnet_fallback",
+            reason="Testnet 保底開單驗證流程",
+        )
+        risk_result = RiskCheckResult(
+            passed=True,
+            size_usdt=size_usdt,
+            leverage=2,
+            stop_loss=sl,
+            take_profit=tp,
+        )
+        logger.info(f"Testnet 保底開單: {symbol} LONG 約 {size_usdt}U @ {entry_price:.2f}")
+        trade_id = await execute_trade(sig, risk_result, entry_price, self.db, "testnet_fallback")
+        if trade_id:
+            logger.info(f"Testnet 保底開單成功: trade_id={trade_id}")
+        else:
+            logger.warning("Testnet 保底開單未成功（可能交易所 API 限制）")
+
+    async def _brain_reload(self) -> None:
+        """排程：每 15 分鐘依大腦狀態重載策略參數"""
+        self._rebuild_strategies_from_brain()
+
+    async def _monitor_report(self) -> None:
+        """每 N 分鐘發一則監控快報到 LINE（今日損益、筆數、未平倉），不需手動跑腳本"""
+        trades_today = self.db.get_trades_today()
+        daily_pnl = self.db.get_daily_pnl()
+        open_trades = self.db.get_open_trades()
+        msg = (
+            f"📊 監控快報\n"
+            f"今日損益: {daily_pnl:+.2f} U | 今日筆數: {len(trades_today)} | 未平倉: {len(open_trades)}\n"
+            f"目標: 50~100 U/日\n"
+            f"— 建議每 3 則快報貼到 Cursor 讓 Agent 改策略"
+        )
+        send_line_message(msg)
+        logger.debug("監控快報已發送")
+
     async def _daily_report(self) -> None:
         """生成每日績效報告並透過 LINE 發送"""
         trades_today = self.db.get_trades_today()
@@ -421,7 +522,8 @@ class TradingBrain:
 
     async def _position_check(self) -> None:
         """持倉止損/止盈檢查：從快取或 REST 取價，觸及則平倉"""
-        if not self.binance_client:
+        # paper 模式允許 client=None（不打交易所，直接結算）
+        if not self.binance_client and TRADING_MODE != "paper":
             return
         open_trades = self.db.get_open_trades()
         if not open_trades:
@@ -434,12 +536,13 @@ class TradingBrain:
             if latest and "close" in latest:
                 prices[sym] = float(latest["close"])
             else:
-                try:
-                    p = await self.binance_client.get_ticker_price(sym)
-                    if p is not None:
-                        prices[sym] = p
-                except Exception:
-                    pass
+                if self.binance_client is not None:
+                    try:
+                        p = await self.binance_client.get_ticker_price(sym)
+                        if p is not None:
+                            prices[sym] = p
+                    except Exception:
+                        pass
         await run_position_check(
             self.db, self.binance_client, prices, risk_manager=self.risk_manager
         )

@@ -26,6 +26,9 @@ BINANCE_LIVE_WS = "wss://fstream.binance.com"
 BINANCE_REST_URL = BINANCE_TESTNET_REST if BINANCE_TESTNET else BINANCE_LIVE_REST
 BINANCE_WS_URL = BINANCE_TESTNET_WS if BINANCE_TESTNET else BINANCE_LIVE_WS
 
+# Testnet 專用：放寬否決（恐懼貪婪/資金費率不擋），方便驗證下單流程
+RELAX_VETO_ON_TESTNET = os.getenv("RELAX_VETO_ON_TESTNET", "true").lower() == "true"
+
 
 # === LINE Messaging API ===
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -74,6 +77,7 @@ SCHEDULER_CONFIG = {
     "strategy_evaluation": {"interval_min": 1,       "desc": "策略信號評估"},
     "position_check":      {"interval_min": 1,       "desc": "持倉/止損檢查"},
     "heartbeat":           {"interval_min": 10,      "desc": "LINE 心跳(靜默)"},
+    "monitor_report":      {"interval_min": 60,      "desc": "監控快報(LINE) 每60分"},
     "daily_report":        {"cron": "0 0 * * *",     "desc": "每日績效報告"},
     "kline_to_parquet":    {"cron": "0 */6 * * *",   "desc": "K線寫入Parquet"},
 }

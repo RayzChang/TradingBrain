@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Optional
 
 from loguru import logger
 
-from config.settings import BINANCE_API_KEY, BINANCE_TESTNET, TRADING_MODE
+from config.settings import (
+    BINANCE_API_KEY,
+    BINANCE_TESTNET,
+    DEFAULT_LEVERAGE,
+    TRADING_MODE,
+)
 from core.execution.binance_client import BinanceFuturesClient
 from notifications.line_notify import send_line_message
 
@@ -27,6 +32,9 @@ def is_trading_enabled() -> bool:
     - 實盤：BINANCE_TESTNET=false、TRADING_MODE=live 且 API Key 已設定（雙重確認防誤觸）
     """
     if not BINANCE_API_KEY:
+        return False
+    # paper 模式永遠不打交易所（用模擬成交寫 DB）
+    if TRADING_MODE == "paper":
         return False
     if BINANCE_TESTNET:
         return True
@@ -64,6 +72,36 @@ async def execute_trade(
     stop_loss = risk_result.stop_loss
     take_profit = risk_result.take_profit
 
+    # === paper 模式：模擬成交（寫 DB，不打交易所）===
+    if TRADING_MODE == "paper":
+        quantity_base = size_usdt / entry_price if entry_price else 0
+        if quantity_base <= 0:
+            logger.warning(f"paper execute_trade: entry_price 無效 {entry_price}")
+            return None
+        opened_at = datetime.utcnow().isoformat()
+        trade_data = {
+            "symbol": symbol,
+            "side": signal.signal_type,
+            "entry_price": entry_price,
+            "quantity": quantity_base,
+            "leverage": leverage,
+            "stop_loss": stop_loss if stop_loss else None,
+            "take_profit": take_profit if take_profit else None,
+            "status": "OPEN",
+            "entry_reason": getattr(signal, "reason", None) or "strategy",
+            "strategy_name": strategy_name,
+            "opened_at": opened_at,
+            "exchange_order_id": "PAPER",
+        }
+        trade_id = db.insert_trade(trade_data)
+        msg = (
+            f"🧪 TradingBrain 模擬開倉 (paper)\n"
+            f"{symbol} {signal.signal_type} | 約 {size_usdt:.0f}U @ {entry_price:.2f} | 槓桿 {leverage}x"
+        )
+        send_line_message(msg)
+        logger.info(f"paper 開倉完成: trade_id={trade_id} {symbol} {signal.signal_type}")
+        return trade_id
+
     if not is_trading_enabled():
         logger.info(
             f"交易未啟用: {symbol} {signal.signal_type} "
@@ -77,11 +115,19 @@ async def execute_trade(
         return None
 
     client = BinanceFuturesClient()
+    use_leverage = leverage
     try:
         await client.set_leverage(symbol, leverage)
     except Exception as e:
-        logger.error(f"set_leverage 失敗: {e}")
-        return None
+        logger.warning(f"set_leverage({leverage}x) 失敗: {e}")
+        # Testnet 常對高槓桿回 400，改用 .env 預設槓桿再試一次
+        use_leverage = max(1, min(DEFAULT_LEVERAGE, 25))
+        try:
+            await client.set_leverage(symbol, use_leverage)
+        except Exception as e2:
+            logger.error(f"set_leverage({use_leverage}x) 仍失敗，為安全起見不下單: {e2}")
+            return None
+        logger.info(f"已改用槓桿 {use_leverage}x 繼續下單")
 
     order_id = await client.place_market_order(symbol, side_binance, quantity_base)
     if order_id is None:

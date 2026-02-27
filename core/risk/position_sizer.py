@@ -79,7 +79,8 @@ class PositionSizer:
         params = self._get_params()
         max_risk = float(params.get("max_risk_per_trade", 0.02))
         min_notional = float(params.get("min_notional_value", 10))
-        max_leverage = int(params.get("max_leverage", 5))
+        # 絕對上限 20x，避免 DB/儀表板誤設導致異常大槓桿
+        max_leverage = min(int(params.get("max_leverage", 5)), 20)
         atr_mult = stop_loss_atr_mult if stop_loss_atr_mult is not None else float(
             params.get("stop_loss_atr_mult", 1.5)
         )
@@ -99,6 +100,10 @@ class PositionSizer:
 
         # 倉位名義價值 = risk_amount / stop_distance_pct（使止損時虧損約等於 risk_amount）
         size_usdt = risk_amount / stop_distance_pct
+        # 名義價值上限：不得超過 balance * max_leverage（否則交易所會拒單）
+        cap_notional = balance * max_leverage
+        if size_usdt > cap_notional:
+            size_usdt = cap_notional
         leverage = min(max_leverage, max(1, int(size_usdt / balance))) if balance > 0 else 1
 
         if size_usdt < min_notional:

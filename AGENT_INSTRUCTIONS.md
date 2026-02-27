@@ -16,6 +16,9 @@
 2. 執行 `git log --oneline -20` 查看最近的 commit 歷史
 3. 確認當前分支和狀態：`git status`
 4. 根據進度檔中的「下一步」繼續工作
+5. **策略監控**：若使用者要求「監控策略、確保能開倉/賺錢」，請讀取 `STRATEGY_MONITORING.md` 並依其中清單檢查 DB、日誌、策略與否決，再提出或實作改動
+5b. **出資人貼回報**：若出資人貼上「幾則 LINE 監控快報」並說「根據這些改策略」，請**只改大腦**（`data/brain_state.json` 或呼叫 `core.brain.update_state()`），不要改寫死的 `main.py` / `core/strategy/*.py`。若「今日筆數 0」持續多則 → 放寬大腦 overrides（adx_min 降低、rsi 區間放寬、relax_veto true）；若有單但虧 → 收緊大腦；若有單且賺未達目標 → 微調大腦。程式每 15 分鐘會讀取大腦，**不需重啟 main**。大腦說明見 `BRAIN.md`，出資人節奏見 `給出資人.md`
+6. **訓練循環**：若使用者要求「運行程式、監控、改善、以利益最大化為優先並持續循環直到達標」，請依 `AGENT_LOOP.md` 執行：運行程式 → 監控（`check_performance.py` + 日誌，**不關 main**）→ 若需改善則**改 code/config 後重啟 main** → 每輪結束後執行 `scripts/agent_cycle_report.py`（可帶本輪改動摘要），**使用者會收到 LINE 報告**。
 
 ### 3. 每次結束工作前
 1. 確保所有修改都已測試可運行
@@ -99,6 +102,11 @@ TradingBrain/
 - 起始資金: 300 USDT（實盤從 50U 起步）
 
 ---
+
+## 策略監控與迭代
+- **`TARGET.md`**：訓練目標 — Testnet 5000U，每日平均收益 50~100U。達標前 Agent 循環以此為止。
+- **`AGENT_LOOP.md`**：一輪循環 — 運行程式 → 監控（`scripts/check_performance.py` + 日誌）→ 改善策略/否決/風控（利益最大化）→ 驗證與重啟 → 重複直到達標。
+- **`STRATEGY_MONITORING.md`**：何時改、怎麼改 — 依 DB 與回測落實賺錢。
 
 ## 完整計畫文件
 詳細的 9 階段計畫請參閱：`PLAN.md`（專案根目錄）

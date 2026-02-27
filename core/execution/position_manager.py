@@ -72,7 +72,7 @@ async def sync_positions_from_exchange(db: "DatabaseManager", client: BinanceFut
 
 async def run_position_check(
     db: "DatabaseManager",
-    client: BinanceFuturesClient,
+    client: BinanceFuturesClient | None,
     prices: dict[str, float],
     *,
     risk_manager=None,
@@ -115,11 +115,13 @@ async def run_position_check(
         if not should_close:
             continue
 
-        close_side = "SELL" if side == "LONG" else "BUY"
-        order_id = await client.close_position_market(symbol, close_side, quantity)
-        if order_id is None:
-            logger.warning(f"position_check 平倉下單失敗: {symbol} {side}")
-            continue
+        # paper 模式：不打交易所，直接以當前價結算
+        if client is not None:
+            close_side = "SELL" if side == "LONG" else "BUY"
+            order_id = await client.close_position_market(symbol, close_side, quantity)
+            if order_id is None:
+                logger.warning(f"position_check 平倉下單失敗: {symbol} {side}")
+                continue
 
         pnl = (current - entry) * quantity if side == "LONG" else (entry - current) * quantity
         pnl_pct = (pnl / (entry * quantity)) * 100 if entry and quantity else 0
@@ -140,8 +142,9 @@ async def run_position_check(
         if risk_manager and hasattr(risk_manager, "update_equity_high_water_mark"):
             # 可選：更新權益高水位
             try:
-                balance = await client.get_balance()
-                risk_manager.update_equity_high_water_mark(balance)
+                if client is not None:
+                    balance = await client.get_balance()
+                    risk_manager.update_equity_high_water_mark(balance)
             except Exception:
                 pass
         logger.info(f"position_check 已平倉: {symbol} {side} {exit_reason} pnl={pnl:.2f}")

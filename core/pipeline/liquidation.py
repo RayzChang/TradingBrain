@@ -17,7 +17,7 @@ import httpx
 import websockets
 from loguru import logger
 
-from config.settings import BINANCE_REST_URL, BINANCE_WS_URL
+from config.settings import BINANCE_REST_URL, BINANCE_TESTNET, BINANCE_WS_URL
 from core.rate_limiter import RateLimiter
 from database.db_manager import DatabaseManager
 
@@ -35,6 +35,7 @@ class LiquidationMonitor:
         self._recent_liquidations: deque[dict] = deque(maxlen=1000)
         self._surge_detected = False
         self._surge_until: float = 0
+        self._testnet_skip_logged = False  # Testnet 爆倉接口常 400，只提醒一次
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -81,11 +82,24 @@ class LiquidationMonitor:
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 403:
                 logger.debug("Liquidation API not available (may require IP whitelist)")
+            elif BINANCE_TESTNET and e.response.status_code == 400:
+                if not self._testnet_skip_logged:
+                    self._testnet_skip_logged = True
+                    logger.warning(
+                        "Testnet 不支援或限制 allForceOrders 接口，爆倉監控已跳過（不影響開單）"
+                    )
             else:
                 logger.error(f"Failed to fetch liquidations: {e}")
             return []
         except Exception as e:
-            logger.error(f"Failed to fetch liquidations: {e}")
+            if BINANCE_TESTNET:
+                if not self._testnet_skip_logged:
+                    self._testnet_skip_logged = True
+                    logger.warning(
+                        f"Testnet 爆倉接口異常，跳過（不影響開單）: {e}"
+                    )
+            else:
+                logger.error(f"Failed to fetch liquidations: {e}")
             return []
 
     async def fetch_and_store(self) -> None:

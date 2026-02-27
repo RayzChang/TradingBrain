@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "last_updated": "2026-02-27",
+  "consecutive_zero_trade_reports": 0,
+  "overrides": {
+    "adx_min": 25,
+    "rsi_oversold": 30,
+    "rsi_overbought": 70,
+    "skip_on_chop": true,
+    "relax_veto": false
+  },
+  "notes": "2026-02-27 策略大改：ADX提高至25（減少假信號）、RSI收緊至30/70、關閉relax_veto讓否決引擎生效、切換至passive_income風控預設、策略加入MTF方向過濾+型態確認+斐波那契優化"
+}

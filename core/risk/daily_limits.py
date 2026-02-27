@@ -1,7 +1,8 @@
 """
-每日虧損 / 回撤熔斷 (Daily Limits & Drawdown Guard)
+每日虧損 / 回撤熔斷 / 獲利鎖利 (Daily Limits & Drawdown Guard & Profit Lock)
 
 - 今日虧損超過 max_daily_loss * balance → 禁止開新倉
+- 今日獲利達到 daily_profit_target（相對當日起始權益）→ 禁止開新倉，鎖利
 - 當前權益自高水位回撤超過 max_drawdown → 禁止開新倉
 高水位 (equity_high_water_mark) 由呼叫方在權益創高時更新至 risk_params。
 """
@@ -48,6 +49,7 @@ class DailyLimitsChecker:
         params = self.db.get_risk_params()
         max_daily_loss = float(params.get("max_daily_loss", 0.05))
         max_drawdown = float(params.get("max_drawdown", 0.15))
+        daily_profit_target = float(params.get("daily_profit_target", 0.0))
 
         if daily_pnl is None:
             daily_pnl = self.db.get_daily_pnl()
@@ -58,6 +60,17 @@ class DailyLimitsChecker:
             reason = f"今日虧損 {daily_pnl:.2f} 已達上限 {-loss_limit:.2f}"
             logger.warning(f"Daily limit triggered: {reason}")
             return DailyLimitsResult(can_open=False, reason=reason)
+
+        # 每日獲利達標鎖利：今日已實現獲利 >= 當日起始權益 × daily_profit_target → 不再開新倉
+        if daily_profit_target > 0 and daily_pnl > 0:
+            start_of_day_equity = current_balance - daily_pnl
+            if start_of_day_equity > 0 and daily_pnl >= start_of_day_equity * daily_profit_target:
+                reason = (
+                    f"今日獲利已達目標 (daily_pnl={daily_pnl:.2f} >= "
+                    f"{start_of_day_equity * daily_profit_target:.2f})，暫停開新倉鎖利"
+                )
+                logger.warning(f"Daily profit target reached: {reason}")
+                return DailyLimitsResult(can_open=False, reason=reason)
 
         # 回撤熔斷：當前權益 vs 高水位
         hwm = params.get("equity_high_water_mark")

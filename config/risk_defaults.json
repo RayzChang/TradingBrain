@@ -50,6 +50,32 @@
       "chop_close_change_mult": 0.3,
       "chop_pause_minutes": 60
     },
+    "passive_income": {
+      "label": "被動收入型（回測最佳: 日均+7.6%）",
+      "max_risk_per_trade": 0.03,
+      "min_notional_value": 10,
+      "max_open_positions": 3,
+      "max_leverage": 5,
+      "dynamic_leverage": true,
+      "stop_loss_atr_mult": 1.5,
+      "take_profit_atr_mult": 4.0,
+      "partial_tp_atr_mult": 2.0,
+      "trailing_stop_pct": 0.015,
+      "min_risk_reward": 1.5,
+      "max_daily_loss": 0.06,
+      "max_drawdown": 0.20,
+      "max_consecutive_losses": 3,
+      "cool_down_after_loss_sec": 7200,
+      "daily_profit_target": 0,
+      "veto_fear_greed_high": 80,
+      "veto_fear_greed_low": 20,
+      "veto_funding_rate_high": 0.001,
+      "veto_funding_rate_low": -0.001,
+      "veto_liquidation_surge": true,
+      "chop_atr_range_mult": 2.0,
+      "chop_close_change_mult": 0.3,
+      "chop_pause_minutes": 60
+    },
     "aggressive": {
       "label": "積極型",
       "max_risk_per_trade": 0.04,
@@ -74,7 +100,32 @@
       "chop_atr_range_mult": 2.5,
       "chop_close_change_mult": 0.4,
       "chop_pause_minutes": 30
+    },
+    "training": {
+      "label": "訓練型(50~100U/日目標)",
+      "max_risk_per_trade": 0.05,
+      "min_notional_value": 10,
+      "max_open_positions": 3,
+      "max_leverage": 10,
+      "dynamic_leverage": true,
+      "stop_loss_atr_mult": 1,
+      "take_profit_atr_mult": 2.5,
+      "trailing_stop_pct": 0.02,
+      "min_risk_reward": 1.5,
+      "max_daily_loss": 0.15,
+      "max_drawdown": 0.25,
+      "max_consecutive_losses": 4,
+      "cool_down_after_loss_sec": 90,
+      "daily_profit_target": 0.02,
+      "veto_fear_greed_high": 90,
+      "veto_fear_greed_low": 10,
+      "veto_funding_rate_high": 0.002,
+      "veto_funding_rate_low": -0.002,
+      "veto_liquidation_surge": true,
+      "chop_atr_range_mult": 2.5,
+      "chop_close_change_mult": 0.4,
+      "chop_pause_minutes": 25
     }
   },
-  "active_preset": "aggressive"
+  "active_preset": "passive_income"
 }

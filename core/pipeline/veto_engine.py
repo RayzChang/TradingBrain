@@ -18,6 +18,8 @@ from typing import Optional
 
 from loguru import logger
 
+from config.settings import BINANCE_TESTNET, RELAX_VETO_ON_TESTNET
+from core.brain import get_overrides as brain_get_overrides
 from core.pipeline.fear_greed import FearGreedMonitor
 from core.pipeline.funding_rate import FundingRateMonitor
 from core.pipeline.liquidation import LiquidationMonitor
@@ -98,31 +100,37 @@ class VetoEngine:
         reasons = []
         details = {}
 
+        # 大腦覆寫 或 Testnet 設定：放寬否決時僅保留爆倉/絞肉機
+        brain = brain_get_overrides()
+        skip_fg_funding = brain.get("relax_veto") is True or (BINANCE_TESTNET and RELAX_VETO_ON_TESTNET)
+
         # === 1. 恐懼貪婪指數檢查 ===
-        fg_value = self.fear_greed.get_value()
-        if fg_value is not None:
-            details["fear_greed"] = fg_value
-            if direction == "LONG" and fg_value >= thresholds["fear_greed_high"]:
-                reasons.append(
-                    f"恐懼貪婪指數 {fg_value} >= {thresholds['fear_greed_high']} (極度貪婪，否決做多)"
-                )
-            elif direction == "SHORT" and fg_value <= thresholds["fear_greed_low"]:
-                reasons.append(
-                    f"恐懼貪婪指數 {fg_value} <= {thresholds['fear_greed_low']} (極度恐懼，否決做空)"
-                )
+        if not skip_fg_funding:
+            fg_value = self.fear_greed.get_value()
+            if fg_value is not None:
+                details["fear_greed"] = fg_value
+                if direction == "LONG" and fg_value >= thresholds["fear_greed_high"]:
+                    reasons.append(
+                        f"恐懼貪婪指數 {fg_value} >= {thresholds['fear_greed_high']} (極度貪婪，否決做多)"
+                    )
+                elif direction == "SHORT" and fg_value <= thresholds["fear_greed_low"]:
+                    reasons.append(
+                        f"恐懼貪婪指數 {fg_value} <= {thresholds['fear_greed_low']} (極度恐懼，否決做空)"
+                    )
 
         # === 2. 資金費率檢查 ===
-        funding_rate = self.funding.get_rate(symbol)
-        if funding_rate is not None:
-            details["funding_rate"] = funding_rate
-            if direction == "LONG" and funding_rate >= thresholds["funding_high"]:
-                reasons.append(
-                    f"資金費率 {funding_rate:.4f} >= {thresholds['funding_high']} (多頭擁擠，否決做多)"
-                )
-            elif direction == "SHORT" and funding_rate <= thresholds["funding_low"]:
-                reasons.append(
-                    f"資金費率 {funding_rate:.4f} <= {thresholds['funding_low']} (空頭擁擠，否決做空)"
-                )
+        if not skip_fg_funding:
+            funding_rate = self.funding.get_rate(symbol)
+            if funding_rate is not None:
+                details["funding_rate"] = funding_rate
+                if direction == "LONG" and funding_rate >= thresholds["funding_high"]:
+                    reasons.append(
+                        f"資金費率 {funding_rate:.4f} >= {thresholds['funding_high']} (多頭擁擠，否決做多)"
+                    )
+                elif direction == "SHORT" and funding_rate <= thresholds["funding_low"]:
+                    reasons.append(
+                        f"資金費率 {funding_rate:.4f} <= {thresholds['funding_low']} (空頭擁擠，否決做空)"
+                    )
 
         # === 3. 爆倉異常檢查 ===
         if thresholds["liquidation_surge"] and self.liquidation.is_surge:
@@ -131,7 +139,7 @@ class VetoEngine:
 
         # === 4. 絞肉機行情檢查 ===
         import time
-        if self._chop_active and time.time() < self._chop_until:
+        if not skip_fg_funding and self._chop_active and time.time() < self._chop_until:
             details["chop_market"] = True
             reasons.append("絞肉機行情偵測中，暫停開單")
         elif self._chop_active:
