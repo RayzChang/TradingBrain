@@ -76,53 +76,34 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. 設定 .env
+### 2. 啟動控制台（⭐ 推薦）
 
 ```bash
+python launcher.py
+```
+
+瀏覽器會自動開啟控制台介面，你可以在上面：
+
+1. **設定** — 填入 API Key、選擇交易模式、設定槓桿等（取代手動編輯 `.env`）
+2. **執行交易所設定** — 一鍵設定槓桿和保證金模式（取代 `python setup_testnet.py`）
+3. **啟動交易大腦** — 按一下就開始交易（取代 `python main.py`）
+4. **開啟儀表板** — 瀏覽器跳出交易監控頁面
+5. **查看即時日誌** — 監控系統運行狀態
+
+> 💡 每個設定的詳細說明請參考 [`docs/使用說明書.md`](docs/使用說明書.md)
+
+### 或者手動操作
+
+```bash
+# 複製設定檔並編輯
 copy .env.example .env
-```
 
-編輯 `.env`，填入你的資料：
-
-```env
-# Binance Demo API（到 testnet.binancefuture.com 建立）
-BINANCE_API_KEY=你的_Demo_API_Key
-BINANCE_API_SECRET=你的_Demo_API_Secret
-BINANCE_TESTNET=true
-
-# 交易模式（paper=僅 log / live=實際下單）
-TRADING_MODE=live
-TRADING_INITIAL_BALANCE=5000
-
-# LINE 通知（選填）
-LINE_CHANNEL_ACCESS_TOKEN=你的_Channel_Token
-LINE_USER_ID=你的_User_ID
-
-# 儀表板（改成你的帳密）
-DASHBOARD_USERNAME=admin
-DASHBOARD_PASSWORD=你的密碼
-```
-
-### 3. 啟動系統
-
-```bash
-# Testnet 設定（設定槓桿和 margin type）
+# 設定交易所
 python setup_testnet.py
 
 # 啟動交易引擎
 python main.py
 ```
-
-### 4. 開啟儀表板
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-瀏覽 http://localhost:5173，用 `.env` 的帳密登入。  
-儀表板每 5 秒自動刷新，顯示交易所實際餘額和損益。
 
 ---
 
@@ -145,38 +126,45 @@ npm run dev
 ## 專案結構
 
 ```
-├── main.py                    # 系統入口
+├── launcher.py                  # ⭐ 控制台啟動器入口（python launcher.py 一鍵啟動）
+├── launcher/                    # 控制台模組
+│   ├── bridge.py                # Python 後端（.env 管理、大腦控制、日誌）
+│   ├── server.py                # FastAPI 控制台 API
+│   └── ui/                      # 控制台前端（HTML/CSS/JS）
+├── main.py                      # 交易引擎入口
+├── setup_testnet.py             # 交易所設定工具
 ├── config/
-│   ├── settings.py            # 全局配置
-│   └── risk_defaults.json     # 風控預設（含 passive_income 最佳參數）
+│   ├── settings.py              # 全局配置
+│   └── risk_defaults.json       # 風控預設（含 passive_income 最佳參數）
 ├── core/
-│   ├── analysis/              # 技術分析引擎
-│   │   ├── engine.py          # 多時間框架分析核心
-│   │   ├── indicators.py      # RSI, MACD, BB, ADX, ATR, EMA...
-│   │   ├── candlestick.py     # K 線型態辨識
-│   │   ├── fibonacci.py       # 斐波那契回撤/擴展
-│   │   ├── divergence.py      # 背離偵測
-│   │   ├── multi_timeframe.py # MTF 趨勢分析
-│   │   └── chop_detector.py   # 絞肉機偵測
-│   ├── strategy/              # 交易策略
-│   │   ├── base.py            # 基類 + MarketRegime 偵測
-│   │   ├── trend_following.py # 趨勢追蹤策略
-│   │   ├── breakout.py        # 突破策略
-│   │   ├── mean_reversion.py  # 均值回歸策略
-│   │   └── signal_aggregator.py # 信號聚合 + 衝突解決 + 冷卻
-│   ├── execution/             # 交易執行
-│   │   ├── binance_client.py  # 幣安合約 API 客戶端
-│   │   └── position_manager.py# 持倉管理
-│   ├── risk/                  # 風險管理
-│   ├── pipeline/              # 資訊管線（資金費率、恐懼貪婪、爆倉）
-│   └── brain/                 # 大腦狀態管理
-├── api/                       # FastAPI 後端（儀表板 API）
-├── frontend/                  # React 儀表板
-├── notifications/             # LINE 推送
-├── scripts/                   # 回測腳本
-│   ├── backtest_v3.py         # 多參數組合回測
-│   └── backtest_30d.py        # 30 天完整回測
-└── database/                  # SQLite 資料庫
+│   ├── analysis/                # 技術分析引擎
+│   │   ├── engine.py            # 多時間框架分析核心
+│   │   ├── indicators.py        # RSI, MACD, BB, ADX, ATR, EMA...
+│   │   ├── candlestick.py       # K 線型態辨識
+│   │   ├── fibonacci.py         # 斐波那契回撤/擴展
+│   │   ├── divergence.py        # 背離偵測
+│   │   ├── multi_timeframe.py   # MTF 趨勢分析
+│   │   └── chop_detector.py     # 絞肉機偵測
+│   ├── strategy/                # 交易策略
+│   │   ├── base.py              # 基類 + MarketRegime 偵測
+│   │   ├── trend_following.py   # 趨勢追蹤策略
+│   │   ├── breakout.py          # 突破策略
+│   │   ├── mean_reversion.py    # 均值回歸策略
+│   │   └── signal_aggregator.py # 信號聚合 + 衝突解決 + 冷却
+│   ├── execution/               # 交易執行
+│   │   ├── binance_client.py    # 幣安合約 API 客戶端
+│   │   └── position_manager.py  # 持倉管理
+│   ├── risk/                    # 風險管理
+│   ├── pipeline/                # 資訊管線（資金費率、恐懼貪婪、爆倉）
+│   └── brain/                   # 大腦狀態管理
+├── api/                         # FastAPI 後端（儀表板 API）
+├── frontend/                    # React 儀表板
+├── notifications/               # LINE 推送
+├── docs/                        # 文件（使用說明書）
+├── scripts/                     # 回測腳本
+│   ├── backtest_v3.py           # 多參數組合回測
+│   └── backtest_30d.py          # 30 天完整回測
+└── database/                    # SQLite 資料庫
 ```
 
 ---
@@ -206,6 +194,12 @@ npm run dev
 - **MTF 方向過濾**：信號必須與 1h/4h 大時間框架趨勢一致
 - **衝突解決**：同幣種同時有 LONG+SHORT 信號時只取最強
 - **同標的冷卻**：2 小時內不重複交易同幣同方向
+
+### 控制台啟動器（新增）
+- ⭐ **`python launcher.py`** 一鍵啟動控制台
+- 在瀏覽器介面上完成所有設定和操作（取代手動編輯 `.env`）
+- 提供詳細的設定說明和模式對照表
+- 即時日誌查看（帶顏色標記）
 
 ### 風控調整
 - 風險預設切換為 `passive_income`（回測最佳參數）

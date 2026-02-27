@@ -68,6 +68,15 @@ def health():
     return {"status": "ok", "mode": TRADING_MODE}
 
 
+# === 靜態檔案伺服（前端 build 後的 dist 目錄）===
+# 放在所有 API 路由之後，作為 fallback，不影響 /api/* 路由
+from fastapi.staticfiles import StaticFiles
+
+_frontend_dist = ROOT / "frontend" / "dist"
+if _frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
+
+
 def run_api():
     """供 main 或單獨啟動時呼叫"""
     import uvicorn

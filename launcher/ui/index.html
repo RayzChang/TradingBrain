@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TradingBrain 控制台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+    <!-- Background particles -->
+    <div class="bg-particles">
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+        <div class="particle"></div>
+    </div>
+
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo-section">
+                <div class="logo-icon">🧠</div>
+                <div>
+                    <h1>TradingBrain</h1>
+                    <p class="subtitle">加密貨幣 AI 自動交易系統</p>
+                </div>
+            </div>
+            <div class="header-status">
+                <div class="status-indicator" id="statusDot"></div>
+                <span id="statusText">已停止</span>
+            </div>
+        </header>
+
+        <!-- Tab Navigation -->
+        <nav class="tab-nav">
+            <button class="tab-btn active" data-tab="control" onclick="switchTab('control')">
+                <span class="tab-icon">🎮</span> 控制台
+            </button>
+            <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">
+                <span class="tab-icon">⚙️</span> 設定
+            </button>
+            <button class="tab-btn" data-tab="logs" onclick="switchTab('logs')">
+                <span class="tab-icon">📝</span> 系統日誌
+            </button>
+        </nav>
+
+        <!-- Tab: Control Panel -->
+        <div class="tab-content active" id="tab-control">
+            <div class="cards-grid">
+                <!-- Brain Control Card -->
+                <div class="card card-brain">
+                    <div class="card-header">
+                        <h2>🧠 交易大腦</h2>
+                        <div class="brain-status-badge" id="brainBadge">已停止</div>
+                    </div>
+                    <div class="card-body">
+                        <p class="card-desc">啟動 AI 交易引擎：即時 K 線分析、策略信號、風控下單</p>
+                        <div class="brain-controls">
+                            <button class="btn btn-start" id="btnStart" onclick="startBrain()">
+                                <span class="btn-icon">▶</span> 啟動
+                            </button>
+                            <button class="btn btn-stop" id="btnStop" onclick="stopBrain()" disabled>
+                                <span class="btn-icon">⏹</span> 停止
+                            </button>
+                        </div>
+                        <div class="brain-error" id="brainError"></div>
+                    </div>
+                </div>
+
+                <!-- Setup Card -->
+                <div class="card card-setup">
+                    <div class="card-header">
+                        <h2>🔧 交易所設定</h2>
+                        <div class="setup-status-badge" id="setupBadge">待設定</div>
+                    </div>
+                    <div class="card-body">
+                        <p class="card-desc">設定幣安交易所的槓桿倍率和保證金模式（全倉/逐倉）</p>
+                        <button class="btn btn-setup" id="btnSetup" onclick="runSetup()">
+                            <span class="btn-icon">🔧</span> 執行設定
+                        </button>
+                        <div class="setup-message" id="setupMessage"></div>
+                    </div>
+                </div>
+
+                <!-- Dashboard Card -->
+                <div class="card card-dashboard">
+                    <div class="card-header">
+                        <h2>📊 儀表板</h2>
+                    </div>
+                    <div class="card-body">
+                        <p class="card-desc">開啟 Web 儀表板查看交易狀態、持倉、信號和風控設定</p>
+                        <button class="btn btn-dashboard" onclick="openDashboard()">
+                            <span class="btn-icon">🌐</span> 開啟儀表板
+                        </button>
+                        <p class="card-note">需要先啟動交易大腦才能使用儀表板</p>
+                    </div>
+                </div>
+
+                <!-- Quick Info Card -->
+                <div class="card card-info">
+                    <div class="card-header">
+                        <h2>ℹ️ 系統資訊</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="info-rows">
+                            <div class="info-row">
+                                <span class="info-label">交易模式</span>
+                                <span class="info-value" id="infoMode">—</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Testnet</span>
+                                <span class="info-value" id="infoTestnet">—</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">初始本金</span>
+                                <span class="info-value" id="infoBalance">—</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">槓桿</span>
+                                <span class="info-value" id="infoLeverage">—</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab: Settings -->
+        <div class="tab-content" id="tab-settings">
+            <div class="settings-container">
+                <div class="card card-settings">
+                    <div class="card-header">
+                        <h2>⚙️ 環境設定 (.env)</h2>
+                    </div>
+                    <div class="card-body">
+                        <form id="envForm" onsubmit="saveEnv(event)">
+                            <div class="settings-section">
+                                <h3>🔑 幣安 API</h3>
+                                <div class="form-group">
+                                    <label for="BINANCE_API_KEY">API Key</label>
+                                    <input type="password" id="BINANCE_API_KEY" name="BINANCE_API_KEY" placeholder="你的 Binance API Key" autocomplete="off">
+                                    <button type="button" class="btn-eye" onclick="togglePassword('BINANCE_API_KEY')">👁</button>
+                                </div>
+                                <div class="form-group">
+                                    <label for="BINANCE_API_SECRET">API Secret</label>
+                                    <input type="password" id="BINANCE_API_SECRET" name="BINANCE_API_SECRET" placeholder="你的 Binance API Secret" autocomplete="off">
+                                    <button type="button" class="btn-eye" onclick="togglePassword('BINANCE_API_SECRET')">👁</button>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="BINANCE_TESTNET">Testnet 模式</label>
+                                        <select id="BINANCE_TESTNET" name="BINANCE_TESTNET">
+                                            <option value="true">✅ 是 (Demo)</option>
+                                            <option value="false">❌ 否 (實盤)</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="RELAX_VETO_ON_TESTNET">放寬否決 (Testnet)</label>
+                                        <select id="RELAX_VETO_ON_TESTNET" name="RELAX_VETO_ON_TESTNET">
+                                            <option value="true">✅ 是</option>
+                                            <option value="false">❌ 否</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="settings-section">
+                                <h3>💰 交易設定</h3>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="TRADING_MODE">交易模式</label>
+                                        <select id="TRADING_MODE" name="TRADING_MODE">
+                                            <option value="paper">📝 Paper (僅模擬)</option>
+                                            <option value="live">🔴 Live (實際下單)</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="TRADING_INITIAL_BALANCE">初始本金 (USDT)</label>
+                                        <input type="number" id="TRADING_INITIAL_BALANCE" name="TRADING_INITIAL_BALANCE" value="5000" min="100">
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="MARGIN_TYPE">保證金模式</label>
+                                        <select id="MARGIN_TYPE" name="MARGIN_TYPE">
+                                            <option value="CROSSED">全倉 (CROSSED)</option>
+                                            <option value="ISOLATED">逐倉 (ISOLATED)</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="DEFAULT_LEVERAGE">槓桿倍率</label>
+                                        <select id="DEFAULT_LEVERAGE" name="DEFAULT_LEVERAGE">
+                                            <option value="1">1x</option>
+                                            <option value="2">2x</option>
+                                            <option value="3">3x</option>
+                                            <option value="5">5x</option>
+                                            <option value="10">10x</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="settings-section">
+                                <h3>💬 LINE 通知 (選填)</h3>
+                                <div class="form-group">
+                                    <label for="LINE_CHANNEL_ACCESS_TOKEN">Channel Access Token</label>
+                                    <input type="password" id="LINE_CHANNEL_ACCESS_TOKEN" name="LINE_CHANNEL_ACCESS_TOKEN" placeholder="選填" autocomplete="off">
+                                    <button type="button" class="btn-eye" onclick="togglePassword('LINE_CHANNEL_ACCESS_TOKEN')">👁</button>
+                                </div>
+                                <div class="form-group">
+                                    <label for="LINE_USER_ID">User ID</label>
+                                    <input type="text" id="LINE_USER_ID" name="LINE_USER_ID" placeholder="選填">
+                                </div>
+                            </div>
+
+                            <div class="settings-section">
+                                <h3>🖥️ 儀表板</h3>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="DASHBOARD_USERNAME">帳號</label>
+                                        <input type="text" id="DASHBOARD_USERNAME" name="DASHBOARD_USERNAME" value="admin">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="DASHBOARD_PASSWORD">密碼</label>
+                                        <input type="password" id="DASHBOARD_PASSWORD" name="DASHBOARD_PASSWORD" placeholder="設定密碼" autocomplete="off">
+                                        <button type="button" class="btn-eye" onclick="togglePassword('DASHBOARD_PASSWORD')">👁</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-save">
+                                    <span class="btn-icon">💾</span> 儲存設定
+                                </button>
+                                <div class="save-feedback" id="saveFeedback"></div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab: Logs -->
+        <div class="tab-content" id="tab-logs">
+            <div class="card card-logs">
+                <div class="card-header">
+                    <h2>📝 系統日誌</h2>
+                    <button class="btn btn-small" onclick="clearLogs()">清除</button>
+                </div>
+                <div class="log-container" id="logContainer">
+                    <div class="log-empty">啟動交易大腦後，日誌會顯示在這裡</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/ui/app.js"></script>
+</body>
+</html>
