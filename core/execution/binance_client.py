@@ -214,14 +214,21 @@ class BinanceFuturesClient:
 
     async def set_margin_type(self, symbol: str, margin_type: str) -> None:
         """設定全倉/逐倉。margin_type 為 'CROSSED'（全倉）或 'ISOLATED'（逐倉）。"""
-        await self._request(
-            "POST",
-            "/fapi/v1/marginType",
-            params={"symbol": symbol, "marginType": margin_type.upper()},
-            weight=1,
-            is_order=True,
-        )
-        logger.info(f"Margin type set: {symbol} -> {margin_type}")
+        try:
+            await self._request(
+                "POST",
+                "/fapi/v1/marginType",
+                params={"symbol": symbol, "marginType": margin_type.upper()},
+                weight=1,
+                is_order=True,
+            )
+            logger.info(f"Margin type set: {symbol} -> {margin_type}")
+        except httpx.HTTPStatusError as e:
+            if "-4046" in str(e.response.text):
+                # 已經是目標模式，不需要変更 — 正常情況
+                logger.debug(f"{symbol} 保證金模式已是 {margin_type}，無需變更")
+            else:
+                raise
 
     async def get_account_info(self) -> dict:
         """取得帳戶資訊（餘額、持倉、保證金模式等）"""
