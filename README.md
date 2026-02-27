@@ -1,196 +1,231 @@
-# TradingBrain — 你的加密貨幣交易小幫手
+# TradingBrain — 加密貨幣 AI 自動交易系統
 
-> 用技術指標自動看盤、用風控保護本金，目標是穩健的被動收入。  
-> **先回測 → 再模擬（Testnet）→ 最後才用真錢（實盤）**，一步都不能省。
-
----
-
-## 這個程式在做什麼？（用白話說）
-
-- **24 小時幫你看 K 線**：不用自己盯盤，程式會接交易所的即時數據。
-- **幫你算技術指標**：例如 RSI、MACD、背離、斐波那契、多時間框架趨勢，你看不懂的圖表，程式幫你算。
-- **用「否決權」過濾**：不會因為一則新聞就亂下單；只有技術面出現信號、且大環境（資金費率、恐懼貪婪指數等）沒亮紅燈時，才會考慮出手。
-- **風控先於賺錢**：每筆虧多少、一天最多虧多少、連虧幾次要休息，都可以在儀表板裡調，嚴格控管風險。
-- **模擬練功再上實盤**：先用幣安 Testnet（假錢）跑 2～4 週，確認邏輯沒問題，再考慮用真金白銀。
-
-所以：**你需要準備的「個人數據」主要是兩類 — 交易所 API、以及（選用）LINE 通知**。下面按階段整理，並用最白話的方式說明怎麼填。
+> 🤖 市場狀態自適應策略 × 多時間框架分析 × 智慧風控  
+> **30 天回測：5,000U → 13,053U (+161%)，日均 +5.37%**
 
 ---
 
-## 一、你需要準備的「個人數據」總覽（P1～P8）
+## 系統架構
 
-| 項目 | 什麼時候需要 | 去哪裡拿 | 必填嗎 |
-|------|--------------|----------|--------|
-| **幣安 API Key** | 模擬交易（P8）與實盤（P9） | 幣安官網 → API 管理 | 要跑模擬/實盤就必填 |
-| **幣安 API Secret** | 同上 | 建立 API 時一併產生，只顯示一次 | 同上 |
-| **LINE Channel Access Token** | 每日報告、心跳異常通知（P8） | LINE Developers 建立 Messaging API 頻道 | 選填（不填就不發 LINE） |
-| **LINE User ID** | 同上，指定要推給誰 | 用 LINE 登入後從 Developers 或 Bot 取得 | 選填 |
-| **儀表板帳號密碼** | 登入 Web 風控頁（P6） | 自己設 | 建議改掉預設 |
-| **SECRET_KEY** | API 後台用 | 自己設一組亂數 | 建議改 |
-
-其餘如 `LOG_LEVEL`、`TRADING_INITIAL_BALANCE`、`TRADING_MODE`、`BINANCE_TESTNET` 在 `.env` 裡都有預設值，第一次可以不用改，之後想微調再動即可。
-
----
-
-## 二、分階段說明：什麼時候要填什麼
-
-### P1～P5：本地跑邏輯、不碰錢
-
-- **不用填 API 或金鑰**也能跑：風控參數、技術分析、策略、排程都會動，只是不會真的下單。
-- 若想先「感受一下」儀表板，可以只改 **儀表板帳密** 和（建議）**SECRET_KEY**，其餘先留空或預設。
-
-### P6：Web 儀表板
-
-- 要登入儀表板時，請在 `.env` 設定：
-  - `DASHBOARD_USERNAME`、`DASHBOARD_PASSWORD`：改成你自己的帳密（預設是 `admin` / `changeme`）。
-  - `SECRET_KEY`：隨便一組長字串（例如用密碼產生器），不要用預設的 `dev-secret-key-change-in-production`。
-
-### P7：回測
-
-- 回測只用本機的 K 線資料（Parquet）與設定，**不需要**幣安 API。
-- 若還沒抓過 K 線，要先跑過 main 或單獨抓一次 K 線，讓 `data/klines/` 裡有對應的 `{symbol}_{timeframe}.parquet`。
-
-### P8：模擬交易（Testnet）
-
-- **必填**：
-  - **幣安 Testnet API Key / Secret**  
-    到 [Binance Futures Testnet](https://testnet.binancefuture.com/) 登入（或註冊 Testnet 帳號）→ 右上角頭像 → API Management → 建立 API，權限至少勾選「合約交易」；**不要勾提幣**。  
-    把產生的 **API Key** 和 **Secret** 填進 `.env` 的 `BINANCE_API_KEY`、`BINANCE_API_SECRET`。
-  - `.env` 裡 `BINANCE_TESTNET=true` 保持為 `true`，程式才會用 Testnet 而不是真錢。
-- **選填**：
-  - **LINE**：若希望每天收到「每日報告」、或系統異常時收到「心跳告警」，再填 `LINE_CHANNEL_ACCESS_TOKEN` 和 `LINE_USER_ID`（取得方式見下一段）。
-
-### P9：實盤（真錢）
-
-- 改用**正式站**的 API：到 [Binance 官網](https://www.binance.com/) → API 管理 → 建立 API，同樣只開「合約交易」、不開提幣，建議綁定 IP。
-- 在 `.env` 設定：`BINANCE_TESTNET=false`，並把 `BINANCE_API_KEY`、`BINANCE_API_SECRET` 換成正式站的 Key/Secret。
-- **另須設 `TRADING_MODE=live`**，程式才會在正式站下單（雙重確認，避免誤用真錢）。
-- 計畫建議先用 50U 跑約 2 週，穩定後再考慮加碼到 300U。
+```
+K 線數據 (WebSocket 15m/1h/4h)
+       ↓
+  技術分析引擎 → 指標 + 斐波那契 + K線型態 + 背離 + MTF
+       ↓
+  市場狀態偵測 (ADX ≥ 20 = 趨勢 / ADX < 20 = 震盪)
+       ↓
+  ┌─ 趨勢狀態 → 趨勢追蹤策略 + 突破策略
+  └─ 震盪狀態 → 均值回歸策略
+       ↓
+  MTF 方向過濾（信號必須與大時間框架趨勢一致）
+       ↓
+  衝突解決 + 同標的冷卻（2 小時）
+       ↓
+  否決引擎（恐懼貪婪指數、資金費率、爆倉偵測、絞肉機偵測）
+       ↓
+  風控（3% 風險 / 5x 槓桿 / SL=1.5ATR / TP=4ATR）
+       ↓
+  部分止盈 50% @ 2ATR → trailing stop 1.5%
+       ↓
+  幣安合約 API 執行下單
+       ↓
+  LINE 即時通知 + Web 儀表板
+```
 
 ---
 
-## 三、各項「個人數據」怎麼取得（白話步驟）
+## 三大策略（v3）
 
-### 1. 幣安 API Key / Secret（模擬用：Testnet）
-
-1. 打開：<https://testnet.binancefuture.com/>
-2. 用 Email 或 GitHub 註冊/登入（這是**測試網**，不會用到你真實的幣安帳戶）。
-3. 右上角頭像 → **API Management**。
-4. 新增一組 API，名稱自訂（例如 `TradingBrain`）。
-5. 權限只勾 **Enable Futures**（啟用合約）；**不要勾 Withdraw**。
-6. 建立後會顯示 **API Key** 和 **Secret**；Secret 只會顯示一次，請複製存好。
-7. 在專案根目錄的 `.env` 裡寫上：
-   - `BINANCE_API_KEY=你複製的 API Key`
-   - `BINANCE_API_SECRET=你複製的 Secret`
-   - `BINANCE_TESTNET=true`（模擬階段保持 true）。
-
-### 2. LINE 每日報告 / 心跳通知（選用）
-
-1. 到 [LINE Developers](https://developers.line.biz/) 登入。
-2. 建立一個 **Provider**（若還沒有），再建立一個 **Channel**，類型選 **Messaging API**。
-3. 在該 Channel 的設定頁：
-   - **Channel access token**（長期）：發行或重新發行，複製下來 → 貼到 `.env` 的 `LINE_CHANNEL_ACCESS_TOKEN`。
-   - **Your user ID**：若頁面有顯示，可直接用；否則要用「讓 Bot 加你好友後，發一則訊息，再從 Webhook 或 Log 查你的 User ID」的方式取得，填進 `.env` 的 `LINE_USER_ID`。
-4. LINE 免費方案約 200 則/月；程式設計成「每日一則報告 + 異常才發心跳」，一般用量不會爆。
-
-### 3. 儀表板帳號密碼與 SECRET_KEY
-
-- 在 `.env` 裡改：
-  - `DASHBOARD_USERNAME=你要的帳號`
-  - `DASHBOARD_PASSWORD=你要的密碼`
-  - `SECRET_KEY=一組隨機長字串`（可線上產生一組 32 字元以上亂數）
+| 策略 | 適用市場 | 進場邏輯 | 30天回測 |
+|------|----------|----------|----------|
+| **趨勢追蹤** | ADX ≥ 20 (趨勢) | EMA 交叉 + ADX 強度 + K線型態 + 斐波那契 + 背離 | 124筆, 50.8% WR, +3,452U |
+| **突破** | ADX ≥ 20 (趨勢) | 布林帶突破 + 量增 1.5x + ADX 連升 + MACD 動能 | 126筆, 55.6% WR, +4,601U |
+| **均值回歸** | ADX < 20 (震盪) | BB上下軌 + RSI 超買超賣 + K線反轉型態 | 市場自適應關閉（近期趨勢盤） |
 
 ---
 
-## 四、第一次使用：從零到跑起來（白話步驟）
+## 回測成績（30 天 / 10 幣種）
 
-### 步驟 1： clone 專案 + 裝環境
+| 指標 | 數值 |
+|------|------|
+| 初始 → 最終 | 5,000U → 13,053U |
+| ROI | +161% |
+| 日均 ROI | **+5.37%** |
+| 總交易 | 250 筆 |
+| 勝率 | 53.2% |
+| 獲利因子 | 1.34 |
+| 最大回撤 | 31.8% |
+
+**幣種排名：**
+LINK (+2,260) → DOT (+2,068) → ADA (+1,699) → DOGE (+1,006) → AVAX (+844)
+
+---
+
+## 快速開始
+
+### 1. 環境建置
 
 ```bash
-# 把專案抓下來（若你還沒 clone）
-git clone https://github.com/RayzChang/TradingBrain.git
-cd TradingBrain
-
-# 建立 Python 虛擬環境（等於幫這個專案單獨裝一套 Python 套件，不影響電腦其他程式）
+# 建立虛擬環境
 python -m venv venv
 
-# 啟動虛擬環境
-# Windows:
+# 啟動（Windows）
 venv\Scripts\activate
-# Mac/Linux:
-# source venv/bin/activate
 
-# 安裝依賴（程式需要的一堆套件）
+# 安裝依賴
 pip install -r requirements.txt
 ```
 
-### 步驟 2： 建立並編輯 .env
+### 2. 設定 .env
 
 ```bash
-# 複製範本（.env 不會被上傳到 Git，你的金鑰只存在自己電腦）
-copy .env.example .env   # Windows
-# cp .env.example .env   # Mac/Linux
-
-# 用記事本或 VS Code 打開 .env，照上面「二、分階段」與「三、怎麼取得」把該填的填一填。
-# 至少先改：DASHBOARD_USERNAME、DASHBOARD_PASSWORD、SECRET_KEY。
-# 要跑模擬（P8）再填 BINANCE_API_KEY、BINANCE_API_SECRET，並確認 BINANCE_TESTNET=true。
+copy .env.example .env
 ```
 
-### 步驟 3： 啟動程式
+編輯 `.env`，填入你的資料：
 
-**方式 A：完整系統（建議）**  
-程式會同時：跑 K 線、算指標、跑策略與風控、接 Testnet 下單（若已填 API）、並在背景開儀表板 API。
+```env
+# Binance Demo API（到 testnet.binancefuture.com 建立）
+BINANCE_API_KEY=你的_Demo_API_Key
+BINANCE_API_SECRET=你的_Demo_API_Secret
+BINANCE_TESTNET=true
+
+# 交易模式（paper=僅 log / live=實際下單）
+TRADING_MODE=live
+TRADING_INITIAL_BALANCE=5000
+
+# LINE 通知（選填）
+LINE_CHANNEL_ACCESS_TOKEN=你的_Channel_Token
+LINE_USER_ID=你的_User_ID
+
+# 儀表板（改成你的帳密）
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=你的密碼
+```
+
+### 3. 啟動系統
 
 ```bash
+# Testnet 設定（設定槓桿和 margin type）
+python setup_testnet.py
+
+# 啟動交易引擎
 python main.py
 ```
 
-**方式 B：只開儀表板（例如只想調風控、看交易紀錄）**
+### 4. 開啟儀表板
 
 ```bash
-# 終端 1
-python run_api_only.py
-
-# 終端 2
 cd frontend
 npm install
 npm run dev
 ```
 
-瀏覽器打開：**http://localhost:5173**  
-用你在 `.env` 設的 `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` 登入。
-
-### 步驟 4： 儀表板裡可以做的事
-
-- **總覽**：看今日損益、未平倉、系統狀態。
-- **風控參數**：調整每筆風險%、每日最大虧損、止損倍數等；可一鍵切換「保守 / 穩健 / 積極」方案（若按了沒反應，請確認已儲存或重新整理）。
-- **信號 / 交易**：看最近產生的信號與交易紀錄。
+瀏覽 http://localhost:5173，用 `.env` 的帳密登入。  
+儀表板每 5 秒自動刷新，顯示交易所實際餘額和損益。
 
 ---
 
-## 五、重要提醒（安全與心態）
+## 風控機制
 
-- **不要把 .env 上傳到 Git**：專案已把 `.env` 放在 `.gitignore`，只要你不手動加入，金鑰就不會進版本庫。
-- **API 權限最小化**：只開「合約交易」，不開提幣；正式站建議綁定 IP，降低被盜用風險。
-- **300U 當學費**：這是用來練系統、練風控的資金，不是保證獲利；被動收入是目標，但請先以「不爆倉、不亂加槓桿」為前提。
-- **先 Testnet 再實盤**：P8 用假錢跑 2～4 週，確認邏輯與通知都正常，再考慮 P9 真錢。
-
----
-
-## 六、專案結構與技術棧（給想細看的人）
-
-- **技術指標觸發，資訊管線否決**：只有技術面給信號，資訊面只用來「擋掉不該做的單」。
-- **全局 API 限流**：避免請求太頻繁被交易所 Ban。
-- **風控可調**：保守 / 穩健 / 積極三套方案，並可在 Web 上即時改參數。
-- **技術棧**：Python 3.11+、FastAPI、React 18 + TypeScript + Tailwind、SQLite-WAL、K 線存 Parquet。
+| 參數 | 值 | 說明 |
+|------|-----|------|
+| 每單風險 | 3% | 最多虧 150U/單（5000U 本金） |
+| 最大槓桿 | 5x | 放大但不瘋狂 |
+| 止損 | 1.5 ATR | 給足空間不被洗出 |
+| 止盈 | 4.0 ATR | 讓利潤跑遠 |
+| 部分止盈 | 2.0 ATR | 50% 先落袋 |
+| Trailing | 1.5% | 剩 50% 跟蹤最高價 |
+| 每日停損 | 6% | 虧 300U 即停 |
+| 最大持倉 | 3 | 分散風險 |
+| 同標的冷卻 | 2 小時 | 避免連續追單 |
 
 ---
 
-## 七、AI 協作與進度
+## 專案結構
 
-- 新開一個 AI session 時，請先讓 AI 讀 **`AGENT_INSTRUCTIONS.md`**，裡面有語言、版控、結束前要更新進度等規則。
-- 專案進度與下一步寫在 **`PROJECT_STATUS.md`**；完整階段計畫在 **`PLAN.md`**。
+```
+├── main.py                    # 系統入口
+├── config/
+│   ├── settings.py            # 全局配置
+│   └── risk_defaults.json     # 風控預設（含 passive_income 最佳參數）
+├── core/
+│   ├── analysis/              # 技術分析引擎
+│   │   ├── engine.py          # 多時間框架分析核心
+│   │   ├── indicators.py      # RSI, MACD, BB, ADX, ATR, EMA...
+│   │   ├── candlestick.py     # K 線型態辨識
+│   │   ├── fibonacci.py       # 斐波那契回撤/擴展
+│   │   ├── divergence.py      # 背離偵測
+│   │   ├── multi_timeframe.py # MTF 趨勢分析
+│   │   └── chop_detector.py   # 絞肉機偵測
+│   ├── strategy/              # 交易策略
+│   │   ├── base.py            # 基類 + MarketRegime 偵測
+│   │   ├── trend_following.py # 趨勢追蹤策略
+│   │   ├── breakout.py        # 突破策略
+│   │   ├── mean_reversion.py  # 均值回歸策略
+│   │   └── signal_aggregator.py # 信號聚合 + 衝突解決 + 冷卻
+│   ├── execution/             # 交易執行
+│   │   ├── binance_client.py  # 幣安合約 API 客戶端
+│   │   └── position_manager.py# 持倉管理
+│   ├── risk/                  # 風險管理
+│   ├── pipeline/              # 資訊管線（資金費率、恐懼貪婪、爆倉）
+│   └── brain/                 # 大腦狀態管理
+├── api/                       # FastAPI 後端（儀表板 API）
+├── frontend/                  # React 儀表板
+├── notifications/             # LINE 推送
+├── scripts/                   # 回測腳本
+│   ├── backtest_v3.py         # 多參數組合回測
+│   └── backtest_30d.py        # 30 天完整回測
+└── database/                  # SQLite 資料庫
+```
 
 ---
 
-祝你穩健邁向被動收入，有問題就查這份 README 或改 `.env` 對照表即可。
+## LINE 通知設定
+
+1. 到 [LINE Developers](https://developers.line.biz/) 登入
+2. 建立 Provider → Channel（類型：Messaging API）
+3. Channel 設定頁：
+   - **Channel access token** → 填入 `.env` 的 `LINE_CHANNEL_ACCESS_TOKEN`
+   - 掃描 QR Code 加入官方帳號為好友
+4. 到 [LINE Login API](https://developers.line.biz/) 取得你的 User ID → 填入 `LINE_USER_ID`
+
+系統會自動推送：
+- 🚀 啟動通知（含策略和風控參數）
+- 📊 定時監控快報（損益、筆數、交易所餘額）
+- 📋 每日績效報告
+
+---
+
+## 2026-02-27 v3 更新摘要
+
+### 策略重大升級
+- **市場狀態自適應**：ADX ≥ 20 用趨勢+突破策略，ADX < 20 用均值回歸（不再互相打架）
+- **新增突破策略**：布林帶突破 + 成交量確認 + ADX 上升 + MACD 動能擴張
+- **部分止盈 + Trailing Stop**：50% 在 2ATR 落袋，剩 50% trailing 1.5% 讓利潤跑
+- **MTF 方向過濾**：信號必須與 1h/4h 大時間框架趨勢一致
+- **衝突解決**：同幣種同時有 LONG+SHORT 信號時只取最強
+- **同標的冷卻**：2 小時內不重複交易同幣同方向
+
+### 風控調整
+- 風險預設切換為 `passive_income`（回測最佳參數）
+- Veto Engine 啟用（`relax_veto=false`）
+- ADX 門檻 20、RSI 30/70
+
+### 系統改善
+- 餘額 API 修復（fallback 到 `/fapi/v2/balance` + `recvWindow` 放寬）
+- 儀表板 5 秒自動刷新 + 交易所實際餘額顯示
+- LINE 通知加入 [DEMO] 模式標記
+
+---
+
+## 安全提醒
+
+- ⚠️ **不要把 .env 上傳到 Git**（已在 .gitignore 中）
+- ⚠️ **API Key 只開合約交易權限，不開提幣**
+- ⚠️ **先用 Demo/Testnet 測試至少 1-2 週再考慮實盤**
+- ⚠️ **回測 ≠ 實盤，過去表現不代表未來**
+
+---
+
+**Made with 🤖 by TradingBrain v3**

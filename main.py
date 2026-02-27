@@ -30,6 +30,7 @@ from config.settings import (
     SCHEDULER_CONFIG, DEFAULT_WATCHLIST,
     API_PORT,
     TRADING_INITIAL_BALANCE,
+    BINANCE_TESTNET,
 )
 from core.logger_setup import setup_logger
 from core.data.websocket_feed import BinanceWebSocketFeed
@@ -155,6 +156,15 @@ class TradingBrain:
         logger.info(f"資料庫: {DB_PATH}")
         logger.info(f"監控幣種: {', '.join(DEFAULT_WATCHLIST)}")
         logger.info(f"交易模式: {TRADING_MODE}")
+
+        # LINE 啟動通知
+        mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
+        send_line_message(
+            f"🚀 TradingBrain v3 {mode_tag} 已啟動\n"
+            f"模式: {TRADING_MODE} | 幣種: {len(DEFAULT_WATCHLIST)}\n"
+            f"策略: 趨勢追蹤 + 突破 + 均值回歸 (市場自適應)\n"
+            f"風控: 3% 風險 / 5x 槓桿 / SL=1.5ATR / TP=4ATR"
+        )
 
         # 8. 啟動 Web API（儀表板後端，背景執行）
         def _run_api():
@@ -478,15 +488,23 @@ class TradingBrain:
         self._rebuild_strategies_from_brain()
 
     async def _monitor_report(self) -> None:
-        """每 N 分鐘發一則監控快報到 LINE（今日損益、筆數、未平倉），不需手動跑腳本"""
+        """每 N 分鐘發一則監控快報到 LINE"""
         trades_today = self.db.get_trades_today()
         daily_pnl = self.db.get_daily_pnl()
         open_trades = self.db.get_open_trades()
+        mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
+        balance_str = ""
+        if self.binance_client:
+            try:
+                bal = await self.binance_client.get_balance()
+                balance_str = f"\n交易所餘額: {bal:.2f} U"
+            except Exception:
+                pass
         msg = (
-            f"📊 監控快報\n"
-            f"今日損益: {daily_pnl:+.2f} U | 今日筆數: {len(trades_today)} | 未平倉: {len(open_trades)}\n"
-            f"目標: 50~100 U/日\n"
-            f"— 建議每 3 則快報貼到 Cursor 讓 Agent 改策略"
+            f"📊 {mode_tag} 監控快報\n"
+            f"今日損益: {daily_pnl:+.2f} U | 筆數: {len(trades_today)} | 未平倉: {len(open_trades)}"
+            f"{balance_str}\n"
+            f"策略: v3 (趨勢+突破+MTF) | 日目標: 3-10%"
         )
         send_line_message(msg)
         logger.debug("監控快報已發送")

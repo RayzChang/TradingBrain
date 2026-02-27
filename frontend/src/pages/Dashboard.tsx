@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { systemApi, tradesApi } from "../api";
 
 export default function Dashboard() {
@@ -8,14 +8,20 @@ export default function Dashboard() {
     total_realized_pnl: number;
     daily_pnl: number;
     open_positions_count: number;
+    exchange_balance?: number;
   } | null>(null);
   const [totalUnrealized, setTotalUnrealized] = useState<number | null>(null);
   const [err, setErr] = useState("");
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  useEffect(() => {
+  const fetchData = useCallback(() => {
     systemApi
       .status()
-      .then(setStatus)
+      .then((d) => {
+        setStatus(d);
+        setLastUpdate(new Date());
+        setErr("");
+      })
       .catch((e) => setErr(String(e)));
     tradesApi
       .openWithPnl()
@@ -23,18 +29,37 @@ export default function Dashboard() {
       .catch(() => setTotalUnrealized(null));
   }, []);
 
+  // 初始載入 + 每 5 秒自動刷新
+  useEffect(() => {
+    fetchData();
+    const timer = setInterval(fetchData, 5000);
+    return () => clearInterval(timer);
+  }, [fetchData]);
+
   if (err) return <p className="text-[var(--red)]">無法載入：{err}</p>;
   if (!status) return <p className="text-[var(--muted)]">載入中…</p>;
 
   const equity = status.initial_balance + status.total_realized_pnl;
   const equityWithUnrealized = totalUnrealized != null ? equity + totalUnrealized : null;
+  const exchangeBal = status.exchange_balance;
 
   return (
     <div>
-      <h2 className="text-xl font-bold mb-6">總覽</h2>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-xl font-bold">總覽</h2>
+        {lastUpdate && (
+          <span className="text-xs text-[var(--muted)]">
+            🔄 {lastUpdate.toLocaleTimeString()} 自動刷新中
+          </span>
+        )}
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card title="模式" value={status.mode.toUpperCase()} />
-        <Card title="參考餘額" value={`${status.initial_balance} USDT`} />
+        {exchangeBal != null && exchangeBal > 0 ? (
+          <Card title="交易所餘額" value={`${exchangeBal.toFixed(2)} USDT`} />
+        ) : (
+          <Card title="參考餘額" value={`${status.initial_balance} USDT`} />
+        )}
         <Card
           title="今日已實現損益"
           value={`${status.daily_pnl >= 0 ? "+" : ""}${status.daily_pnl.toFixed(2)} USDT`}

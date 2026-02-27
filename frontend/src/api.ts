@@ -60,5 +60,7 @@ export const systemApi = {
       total_realized_pnl: number;
       daily_pnl: number;
       open_positions_count: number;
+      exchange_balance?: number;
+      last_updated?: string;
     }>("/system/status"),
 };

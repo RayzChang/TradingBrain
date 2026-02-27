@@ -58,9 +58,10 @@ class BinanceFuturesClient:
         self._symbol_info_cache: dict[str, Any] = {}
 
     def _sign(self, params: dict[str, Any]) -> dict[str, Any]:
-        """加入 timestamp 並計算 signature，回傳新 params"""
+        """加入 timestamp、recvWindow 並計算 signature，回傳新 params"""
         params = dict(params)
         params["timestamp"] = int(time.time() * 1000)
+        params.setdefault("recvWindow", 10000)  # 放寬容差，Demo 常有延遲
         query = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
         sig = hmac.new(
             self.api_secret.encode("utf-8"),
@@ -78,7 +79,7 @@ class BinanceFuturesClient:
         weight: int = 1,
         is_order: bool = False,
     ) -> dict[str, Any]:
-        """發送簽名請求（GET 或 POST）"""
+        """發送簽名請求（GET 或 POST），含完整錯誤日誌"""
         if not self.api_key or not self.api_secret:
             raise ValueError("BINANCE_API_KEY / BINANCE_API_SECRET 未設定")
         await self.limiter.acquire(weight=weight, is_order=is_order)
@@ -93,7 +94,11 @@ class BinanceFuturesClient:
             else:
                 resp = await client.post(url, params=params, headers=headers)
         self.limiter.update_from_headers(dict(resp.headers))
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            logger.error(
+                f"Binance API error: {method} {path} -> {resp.status_code} | {resp.text}"
+            )
+            resp.raise_for_status()
         return resp.json()
 
     async def _get_exchange_info_symbol(self, symbol: str) -> Optional[dict]:
@@ -130,11 +135,26 @@ class BinanceFuturesClient:
         return float(data.get("price", 0)) if data.get("price") else None
 
     async def get_balance(self) -> float:
-        """取得 USDT 錢包權益（totalWalletBalance）"""
-        data = await self._request("GET", "/fapi/v2/account", weight=5)
-        for asset in data.get("assets", []):
-            if asset.get("asset") == "USDT":
-                return float(asset.get("totalWalletBalance", 0))
+        """取得 USDT 錢包權益，優先用 /fapi/v2/balance（較輕量、Demo 相容性好）"""
+        # 方法 1：/fapi/v2/balance（輕量端點）
+        try:
+            data = await self._request("GET", "/fapi/v2/balance", weight=5)
+            if isinstance(data, list):
+                for asset in data:
+                    if asset.get("asset") == "USDT":
+                        return float(asset.get("balance", 0))
+        except Exception as e:
+            logger.warning(f"get_balance via /fapi/v2/balance failed: {e}")
+
+        # 方法 2：fallback 到 /fapi/v2/account
+        try:
+            data = await self._request("GET", "/fapi/v2/account", weight=5)
+            for asset in data.get("assets", []):
+                if asset.get("asset") == "USDT":
+                    return float(asset.get("totalWalletBalance", 0))
+        except Exception as e:
+            logger.error(f"get_balance via /fapi/v2/account also failed: {e}")
+
         return 0.0
 
     async def get_positions(self) -> list[dict]:
