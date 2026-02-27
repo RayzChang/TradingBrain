@@ -56,11 +56,33 @@ class BinanceFuturesClient:
         self.limiter = RateLimiter.get_instance()
         self._client: Optional[httpx.AsyncClient] = None
         self._symbol_info_cache: dict[str, Any] = {}
+        self._time_offset: int = 0  # 本地與伺服器的時間差 (ms)
+        self._time_synced: bool = False
+
+    async def _sync_time(self) -> None:
+        """同步本地時鐘與幣安伺服器，計算偏移量（只需一次）"""
+        if self._time_synced:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                local_before = int(time.time() * 1000)
+                resp = await client.get(f"{self.base_url}/fapi/v1/time")
+                local_after = int(time.time() * 1000)
+                if resp.status_code == 200:
+                    server_time = resp.json().get("serverTime", 0)
+                    # 用請求中間點估算本地時間
+                    local_mid = (local_before + local_after) // 2
+                    self._time_offset = server_time - local_mid
+                    logger.info(f"伺服器時間同步完成：偏移 {self._time_offset}ms")
+                    self._time_synced = True
+        except Exception as e:
+            logger.warning(f"伺服器時間同步失敗: {e}，使用本地時間")
 
     def _sign(self, params: dict[str, Any]) -> dict[str, Any]:
         """加入 timestamp、recvWindow 並計算 signature，回傳新 params"""
         params = dict(params)
-        params["timestamp"] = int(time.time() * 1000)
+        # 使用校正後的時間戳
+        params["timestamp"] = int(time.time() * 1000) + self._time_offset
         params.setdefault("recvWindow", 10000)  # 放寬容差，Demo 常有延遲
         query = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
         sig = hmac.new(
@@ -80,6 +102,8 @@ class BinanceFuturesClient:
         is_order: bool = False,
     ) -> dict[str, Any]:
         """發送簽名請求（GET 或 POST），含完整錯誤日誌"""
+        # 確保時間已同步
+        await self._sync_time()
         if not self.api_key or not self.api_secret:
             raise ValueError("BINANCE_API_KEY / BINANCE_API_SECRET 未設定")
         await self.limiter.acquire(weight=weight, is_order=is_order)
