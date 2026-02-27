@@ -35,33 +35,25 @@ async def main():
     print("TradingBrain — 測試盤餘額與設定")
     print("=" * 60)
 
-    # 1. 餘額與帳戶
+    # 1. 餘額
     try:
-        info = await client.get_account_info()
+        balance = await client.get_balance()
+        print(f"\n【餘額】USDT")
+        print(f"  錢包權益: {balance:.2f} USDT")
     except Exception as e:
-        print(f"無法取得帳戶（請確認 .env 的 API Key/Secret 正確）: {e}")
-        return
-
-    assets = info.get("assets", [])
-    for a in assets:
-        if a.get("asset") == "USDT":
-            bal = float(a.get("totalWalletBalance", 0))
-            available = float(a.get("availableBalance", 0))
-            print(f"\n【餘額】USDT")
-            print(f"  錢包權益: {bal:.2f} USDT")
-            print(f"  可用:     {available:.2f} USDT")
-            break
-    else:
-        print("\n【餘額】未找到 USDT")
+        print(f"  餘額取得失敗（不影響後續設定）: {e}")
 
     # 持倉
-    positions = await client.get_positions()
-    if positions:
-        print(f"\n【目前持倉】共 {len(positions)} 筆")
-        for p in positions:
-            print(f"  {p['symbol']} 數量={p['positionAmt']} 槓桿={p['leverage']}x 未實現盈虧={p.get('unRealizedProfit', 0):.2f}")
-    else:
-        print("\n【目前持倉】無")
+    try:
+        positions = await client.get_positions()
+        if positions:
+            print(f"\n【目前持倉】共 {len(positions)} 筆")
+            for p in positions:
+                print(f"  {p['symbol']} 數量={p['positionAmt']} 槓桿={p['leverage']}x 未實現盈虧={p.get('unRealizedProfit', 0):.2f}")
+        else:
+            print("\n【目前持倉】無")
+    except Exception as e:
+        print(f"  持倉取得失敗（不影響後續設定）: {e}")
 
     # 2. 依 .env 設定全倉/逐倉與槓桿
     print(f"\n【.env 設定】MARGIN_TYPE={MARGIN_TYPE}（全倉=CROSSED 逐倉=ISOLATED）, DEFAULT_LEVERAGE={DEFAULT_LEVERAGE}x")
