@@ -163,9 +163,14 @@ async def execute_trade(
 
     # P9: 開倉 LINE 通知（實盤/模擬皆可發，若已設定 LINE）
     mode = "Testnet" if BINANCE_TESTNET else "實盤"
+    sl_text = f"{stop_loss:.4f}" if stop_loss else "無"
+    tp_text = f"{take_profit:.4f}" if take_profit else "無"
     open_msg = (
         f"📈 TradingBrain 開倉 ({mode})\n"
-        f"{symbol} {signal.signal_type} | 約 {size_usdt:.0f}U @ {entry_price:.2f} | 槓桿 {leverage}x"
+        f"{symbol} {signal.signal_type} | 策略: {strategy_name}\n"
+        f"金額: 約 {size_usdt:.0f} U | 槓桿: {leverage}x\n"
+        f"進場: {entry_price:.4f}\n"
+        f"止損: {sl_text} | 止盈: {tp_text}"
     )
     send_line_message(open_msg)
 

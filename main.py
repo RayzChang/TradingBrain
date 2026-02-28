@@ -427,11 +427,15 @@ class TradingBrain:
                     if trade_id:
                         open_trades = self.db.get_open_trades()
                     else:
+                        err_msg = f"❌ TradingBrain 交易所退單\n{sig.symbol} {sig.signal_type} | {sig.strategy_name}\n原因: 請檢查日誌 (通常為保證金不足或槓桿過高)"
+                        send_line_message(err_msg)
                         logger.info(
                             f"風控通過但未下單: {sig.symbol} {sig.signal_type} "
                             f"size={risk_result.size_usdt}U sl={risk_result.stop_loss}"
                         )
                 else:
+                    err_msg = f"⚠️ TradingBrain 風控攔截\n{sig.symbol} {sig.signal_type} | {sig.strategy_name}\n攔截原因: {risk_result.reason}"
+                    send_line_message(err_msg)
                     logger.info(f"風控攔截: {sig.symbol} {sig.signal_type} - {risk_result.reason}")
 
         # 保底開單（僅觸發一次）：避免長時間 0 倉，讓整條流程可被驗證/訓練
