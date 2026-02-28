@@ -100,11 +100,17 @@ class PositionSizer:
 
         # 倉位名義價值 = risk_amount / stop_distance_pct（使止損時虧損約等於 risk_amount）
         size_usdt = risk_amount / stop_distance_pct
-        # 名義價值上限：不得超過 balance * max_leverage（否則交易所會拒單）
-        cap_notional = balance * max_leverage
+        # 防止因為手續費/滑點導致保證金不足，設定 95% 安全緩衝
+        # 並根據最大同時持倉數量平分可用保證金
+        max_open = self.max_open_positions(balance)
+        safe_balance_per_trade = (balance / max_open) * 0.95
+        
+        # 名義價值上限：可用保證金 * 最大槓桿
+        cap_notional = safe_balance_per_trade * max_leverage
         if size_usdt > cap_notional:
             size_usdt = cap_notional
-        leverage = min(max_leverage, max(1, int(size_usdt / balance))) if balance > 0 else 1
+            
+        leverage = min(max_leverage, max(1, int(size_usdt / safe_balance_per_trade))) if safe_balance_per_trade > 0 else 1
 
         if size_usdt < min_notional:
             logger.warning(
