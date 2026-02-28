@@ -157,13 +157,20 @@ class TradingBrain:
         logger.info(f"監控幣種: {', '.join(DEFAULT_WATCHLIST)}")
         logger.info(f"交易模式: {TRADING_MODE}")
 
+        # 讀取當前風控設定供 LINE 顯示
+        risk_params = self.db.get_risk_params()
+        max_risk_pct = float(risk_params.get("max_risk_per_trade", 0.03)) * 100
+        max_lev = int(risk_params.get("max_leverage", DEFAULT_LEVERAGE))
+        sl_atr = float(risk_params.get("stop_loss_atr_mult", 1.5))
+        tp_atr = float(risk_params.get("take_profit_atr_mult", 4.0))
+
         # LINE 啟動通知
         mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
         send_line_message(
             f"🚀 TradingBrain v3 {mode_tag} 已啟動\n"
             f"模式: {TRADING_MODE} | 幣種: {len(DEFAULT_WATCHLIST)}\n"
             f"策略: 趨勢追蹤 + 突破 + 均值回歸 (市場自適應)\n"
-            f"風控: 3% 風險 / 5x 槓桿 / SL=1.5ATR / TP=4ATR"
+            f"風控: {max_risk_pct:.1f}% 風險 / {max_lev}x 槓桿 / SL={sl_atr}ATR / TP={tp_atr}ATR"
         )
 
         # 8. 啟動 Web API（儀表板後端，背景執行）

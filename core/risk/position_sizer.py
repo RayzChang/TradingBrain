@@ -79,8 +79,9 @@ class PositionSizer:
         params = self._get_params()
         max_risk = float(params.get("max_risk_per_trade", 0.02))
         min_notional = float(params.get("min_notional_value", 10))
+        from config.settings import DEFAULT_LEVERAGE
         # 絕對上限 20x，避免 DB/儀表板誤設導致異常大槓桿
-        max_leverage = min(int(params.get("max_leverage", 5)), 20)
+        max_leverage = min(int(params.get("max_leverage", DEFAULT_LEVERAGE)), 20)
         atr_mult = stop_loss_atr_mult if stop_loss_atr_mult is not None else float(
             params.get("stop_loss_atr_mult", 1.5)
         )
