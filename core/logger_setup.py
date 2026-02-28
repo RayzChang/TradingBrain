@@ -15,8 +15,12 @@ from config.settings import LOG_DIR, LOG_LEVEL
 def setup_logger() -> None:
     """初始化全局日誌配置"""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-    logger.remove()
+    # 取消預設的 stderr 輸出，避免 log 重複。但不使用 logger.remove() 清除所有
+    # 因為 launcher_bridge 已經註冊了 LogCapture sink
+    try:
+        logger.remove(0)
+    except ValueError:
+        pass
 
     # 控制台輸出（彩色）
     logger.add(

@@ -187,10 +187,11 @@ class TradingBrain:
         logger.info(f"儀表板 API: http://0.0.0.0:{API_PORT}")
 
         # 自動在背景啟動前端 Vite 開發伺服器 (避開 npm run build 失敗問題)
-        import subprocess
+        import subprocess, sys
         try:
+            npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
             self._vite_proc = subprocess.Popen(
-                "npm run dev", 
+                f"{npm_cmd} run dev", 
                 cwd="frontend", 
                 shell=True,
                 stdout=subprocess.DEVNULL,
@@ -592,6 +593,7 @@ class TradingBrain:
 
     async def run(self) -> None:
         """主運行迴圈"""
+        await self.startup()
 
         # 啟動排程器
         self.scheduler.start()
