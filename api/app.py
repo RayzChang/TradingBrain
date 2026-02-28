@@ -71,10 +71,22 @@ def health():
 # === 靜態檔案伺服（前端 build 後的 dist 目錄）===
 # 放在所有 API 路由之後，作為 fallback，不影響 /api/* 路由
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 _frontend_dist = ROOT / "frontend" / "dist"
 if _frontend_dist.exists():
-    app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
+    # 靜態資源（JS/CSS/圖片等）
+    app.mount("/assets", StaticFiles(directory=str(_frontend_dist / "assets")), name="assets")
+
+    # SPA fallback：所有非 API 路徑都回傳 index.html，讓 React Router 處理
+    @app.get("/{path:path}")
+    async def spa_fallback(path: str):
+        # 如果是實際存在的靜態檔案，直接回傳
+        file_path = _frontend_dist / path
+        if path and file_path.exists() and file_path.is_file():
+            return FileResponse(str(file_path))
+        # 否則回傳 index.html，交給 React Router
+        return FileResponse(str(_frontend_dist / "index.html"))
 
 
 def run_api():
