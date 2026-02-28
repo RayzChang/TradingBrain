@@ -30,7 +30,7 @@ from config.settings import (
     SCHEDULER_CONFIG, DEFAULT_WATCHLIST,
     API_PORT,
     TRADING_INITIAL_BALANCE,
-    BINANCE_TESTNET,
+    DEFAULT_LEVERAGE,
 )
 from core.logger_setup import setup_logger
 from core.data.websocket_feed import BinanceWebSocketFeed
