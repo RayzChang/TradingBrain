@@ -184,7 +184,21 @@ class TradingBrain:
             )
         api_thread = threading.Thread(target=_run_api, daemon=True)
         api_thread.start()
-        logger.info(f"儀表板 API: http://0.0.0.0:{API_PORT} （前端請另開 npm run dev 並開 http://localhost:5173）")
+        logger.info(f"儀表板 API: http://0.0.0.0:{API_PORT}")
+
+        # 自動在背景啟動前端 Vite 開發伺服器 (避開 npm run build 失敗問題)
+        import subprocess
+        try:
+            self._vite_proc = subprocess.Popen(
+                "npm run dev", 
+                cwd="frontend", 
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            logger.info("✅ 已自動在背景啟動 Vite 前端 (http://localhost:5173)")
+        except Exception as e:
+            logger.warning(f"自動啟動 Vite 失敗，請手動 cd frontend && npm run dev: {e}")
 
     def _load_risk_defaults(self) -> None:
         """從 risk_defaults.json 載入預設風控參數"""
@@ -578,7 +592,6 @@ class TradingBrain:
 
     async def run(self) -> None:
         """主運行迴圈"""
-        await self.startup()
 
         # 啟動排程器
         self.scheduler.start()
@@ -630,6 +643,13 @@ class TradingBrain:
 
         if self.liquidation_monitor:
             await self.liquidation_monitor.close()
+
+        if hasattr(self, "_vite_proc") and self._vite_proc:
+            try:
+                self._vite_proc.terminate()
+                logger.info("已終止 Vite 前端伺服器")
+            except Exception:
+                pass
 
         logger.info("TradingBrain 已安全關閉")
 

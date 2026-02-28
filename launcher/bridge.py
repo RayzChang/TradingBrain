@@ -230,9 +230,9 @@ class LauncherBridge:
         """在瀏覽器中開啟儀表板"""
         if self._status != "running":
             return {"success": False, "message": "請先啟動交易大腦，儀表板才能使用"}
-        url = "http://localhost:8888"
+        url = "http://localhost:5173"
         webbrowser.open(url)
-        return {"success": True, "message": f"已開啟 {url}"}
+        return {"success": True, "message": f"已開啟 {url} (Vite 開發伺服器)"}
 
     # ─── 內部工具 ─────────────────────────────────────────
 
