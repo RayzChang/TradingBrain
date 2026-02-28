@@ -10,14 +10,17 @@ export async function api<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
+  const headers = new Headers(options?.headers);
+  headers.set("Authorization", `Basic ${getAuth()}`);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
-    headers: {
-      Authorization: `Basic ${getAuth()}`,
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
+    headers,
   });
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || String(res.status));
