@@ -153,25 +153,35 @@ async function pollStatus() {
         const btnStop = document.getElementById('btnStop');
         const badge = document.getElementById('brainBadge');
         const errorEl = document.getElementById('brainError');
+        const statusText = document.getElementById('statusText');
+        const statusDot = document.getElementById('statusDot');
 
         if (data.brain_status === 'running') {
             if (btnStart) { btnStart.disabled = true; btnStart.innerHTML = '<span class="btn-icon">▶</span> 啟動'; }
             if (btnStop) { btnStop.disabled = false; btnStop.innerHTML = '<span class="btn-icon">⏹</span> 停止'; }
             if (badge) { badge.textContent = '運行中'; badge.className = 'brain-status-badge running'; }
+            if (statusText) statusText.textContent = '運行中';
+            if (statusDot) statusDot.className = 'status-indicator running';
             if (errorEl) errorEl.textContent = '';
         } else if (data.brain_status === 'starting') {
             if (btnStart) { btnStart.disabled = true; btnStart.innerHTML = '<span class="spinner"></span> 啟動中...'; }
             if (btnStop) { btnStop.disabled = true; }
             if (badge) { badge.textContent = '啟動中...'; badge.className = 'brain-status-badge starting'; }
+            if (statusText) statusText.textContent = '啟動中...';
+            if (statusDot) statusDot.className = 'status-indicator starting';
         } else if (data.brain_status === 'error') {
             if (btnStart) { btnStart.disabled = false; btnStart.innerHTML = '<span class="btn-icon">▶</span> 啟動'; }
             if (btnStop) { btnStop.disabled = true; }
             if (badge) { badge.textContent = '錯誤'; badge.className = 'brain-status-badge error'; }
+            if (statusText) statusText.textContent = '錯誤';
+            if (statusDot) statusDot.className = 'status-indicator error';
             if (errorEl) errorEl.textContent = data.brain_error || '未知錯誤';
         } else {
             if (btnStart) { btnStart.disabled = false; btnStart.innerHTML = '<span class="btn-icon">▶</span> 啟動'; }
             if (btnStop) { btnStop.disabled = true; }
             if (badge) { badge.textContent = '已停止'; badge.className = 'brain-status-badge'; }
+            if (statusText) statusText.textContent = '已停止';
+            if (statusDot) statusDot.className = 'status-indicator';
             if (errorEl) errorEl.textContent = '';
         }
 
