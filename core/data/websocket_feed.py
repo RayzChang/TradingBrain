@@ -7,6 +7,7 @@
 
 import asyncio
 import json
+import threading
 from collections import defaultdict
 from datetime import datetime
 from typing import Any, Callable, Optional
@@ -18,7 +19,7 @@ from config.settings import BINANCE_WS_URL, DEFAULT_WATCHLIST, KLINE_TIMEFRAMES
 
 
 class KlineCache:
-    """K 線記憶體快取 — 儲存最近 N 根 K 線供即時分析"""
+    """K 線記憶體快取 — 儲存最近 N 根 K 線供即時分析（線程安全）"""
 
     def __init__(self, max_candles: int = 200) -> None:
         self.max_candles = max_candles
@@ -26,31 +27,36 @@ class KlineCache:
         self._data: dict[str, dict[str, list[dict]]] = defaultdict(
             lambda: defaultdict(list)
         )
+        self._lock = threading.Lock()
 
     def update(self, symbol: str, timeframe: str, candle: dict) -> None:
         """更新或新增一根 K 線"""
-        candles = self._data[symbol][timeframe]
+        with self._lock:
+            candles = self._data[symbol][timeframe]
 
-        if candles and candles[-1]["open_time"] == candle["open_time"]:
-            candles[-1] = candle
-        else:
-            candles.append(candle)
+            if candles and candles[-1]["open_time"] == candle["open_time"]:
+                candles[-1] = candle
+            else:
+                candles.append(candle)
 
-        if len(candles) > self.max_candles:
-            self._data[symbol][timeframe] = candles[-self.max_candles:]
+            if len(candles) > self.max_candles:
+                self._data[symbol][timeframe] = candles[-self.max_candles:]
 
     def get(self, symbol: str, timeframe: str) -> list[dict]:
         """取得指定交易對和時間框架的所有 K 線"""
-        return self._data.get(symbol, {}).get(timeframe, [])
+        with self._lock:
+            return list(self._data.get(symbol, {}).get(timeframe, []))
 
     def get_latest(self, symbol: str, timeframe: str) -> Optional[dict]:
         """取得最新一根 K 線"""
-        candles = self.get(symbol, timeframe)
-        return candles[-1] if candles else None
+        with self._lock:
+            candles = self._data.get(symbol, {}).get(timeframe, [])
+            return candles[-1].copy() if candles else None
 
     def get_symbols(self) -> list[str]:
         """取得所有有數據的交易對"""
-        return list(self._data.keys())
+        with self._lock:
+            return list(self._data.keys())
 
 
 class BinanceWebSocketFeed:

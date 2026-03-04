@@ -1,6 +1,7 @@
 // ─── TradingBrain Launcher – Frontend Logic ───
 
 const API = '';  // same origin
+window.lastLauncherState = 'stopped';
 
 // ─── Tab Navigation ─────────────────────────────
 
@@ -30,7 +31,6 @@ async function loadEnv() {
                 el.value = data[field];
             }
         });
-        // Update info panel
         updateInfoPanel(data);
     } catch (e) {
         console.error('Failed to load env:', e);
@@ -43,10 +43,19 @@ function updateInfoPanel(data) {
     const balance = data.TRADING_INITIAL_BALANCE ? data.TRADING_INITIAL_BALANCE + ' U' : '—';
     const leverage = data.DEFAULT_LEVERAGE ? data.DEFAULT_LEVERAGE + 'x' : '—';
 
-    document.getElementById('infoMode').textContent = mode === 'live' ? '🔴 Live' : '📝 Paper';
-    document.getElementById('infoTestnet').textContent = testnet;
-    document.getElementById('infoBalance').textContent = balance;
-    document.getElementById('infoLeverage').textContent = leverage;
+    const modeEl = document.getElementById('infoMode');
+    const testnetEl = document.getElementById('infoTestnet');
+    const balanceEl = document.getElementById('infoBalance');
+    const leverageEl = document.getElementById('infoLeverage');
+
+    if (modeEl) modeEl.textContent = mode === 'live' ? '🔴 Live' : '📝 Paper';
+    if (testnetEl) testnetEl.textContent = testnet;
+    if (balanceEl) balanceEl.textContent = balance;
+    if (leverageEl) leverageEl.textContent = leverage;
+
+    if (data.DASHBOARD_USERNAME && data.DASHBOARD_PASSWORD) {
+        window.brainAuth = btoa(data.DASHBOARD_USERNAME + ':' + data.DASHBOARD_PASSWORD);
+    }
 }
 
 async function saveEnv(event) {
@@ -63,7 +72,7 @@ async function saveEnv(event) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data)
         });
-        const result = await res.json();
+        await res.json();
         feedback.textContent = '✅ 設定已儲存！';
         feedback.className = 'save-feedback success';
         updateInfoPanel(data);
@@ -76,15 +85,17 @@ async function saveEnv(event) {
 
 function togglePassword(fieldId) {
     const el = document.getElementById(fieldId);
-    el.type = el.type === 'password' ? 'text' : 'password';
+    if (el) el.type = el.type === 'password' ? 'text' : 'password';
 }
 
-// ─── Setup Testnet ──────────────────────────────
+// ─── Setup ──────────────────────────────────────
 
 async function runSetup() {
     const btn = document.getElementById('btnSetup');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> 設定中...';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> 設定中...';
+    }
     try {
         await fetch(API + '/api/setup', { method: 'POST' });
     } catch (e) {
@@ -95,6 +106,16 @@ async function runSetup() {
 // ─── Brain Control ──────────────────────────────
 
 async function startBrain() {
+    const btn = document.getElementById('btnStart');
+    const badge = document.getElementById('brainBadge');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> 啟動中...';
+    }
+    if (badge) {
+        badge.textContent = '啟動中...';
+        badge.className = 'brain-status-badge starting';
+    }
     try {
         await fetch(API + '/api/brain/start', { method: 'POST' });
     } catch (e) {
@@ -103,6 +124,16 @@ async function startBrain() {
 }
 
 async function stopBrain() {
+    const btn = document.getElementById('btnStop');
+    const badge = document.getElementById('brainBadge');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> 停止中...';
+    }
+    if (badge) {
+        badge.textContent = '停止中...';
+        badge.className = 'brain-status-badge stopping';
+    }
     try {
         await fetch(API + '/api/brain/stop', { method: 'POST' });
     } catch (e) {
@@ -110,169 +141,201 @@ async function stopBrain() {
     }
 }
 
-// ─── Dashboard ──────────────────────────────────
-
-async function openDashboard() {
-    try {
-        const res = await fetch(API + '/api/dashboard', { method: 'POST' });
-        const data = await res.json();
-        if (!data.success) {
-            showToast(data.message, 'warning');
-        }
-    } catch (e) {
-        showToast('無法連線到啟動器後端', 'error');
-    }
-}
-
-function showToast(message, type = 'info') {
-    // Remove existing toast
-    const existing = document.getElementById('toast');
-    if (existing) existing.remove();
-
-    const toast = document.createElement('div');
-    toast.id = 'toast';
-    toast.className = 'toast toast-' + type;
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    requestAnimationFrame(() => toast.classList.add('show'));
-    setTimeout(() => {
-        toast.classList.remove('show');
-        setTimeout(() => toast.remove(), 300);
-    }, 3000);
-}
-
-// ─── Status Polling ─────────────────────────────
-
-const STATUS_LABELS = {
-    stopped: '已停止',
-    starting: '啟動中...',
-    running: '運行中',
-    stopping: '停止中...',
-    error: '錯誤'
-};
-
-const SETUP_LABELS = {
-    idle: '待設定',
-    running: '設定中...',
-    success: '已完成',
-    error: '失敗'
-};
+// ─── Polling ───────────────────────────────────
 
 async function pollStatus() {
     try {
         const res = await fetch(API + '/api/status');
-        const status = await res.json();
+        if (!res.ok) throw new Error('API Offline');
+        const data = await res.json();
 
-        // Brain status
-        const brainStatus = status.brain_status;
-        const dot = document.getElementById('statusDot');
-        const text = document.getElementById('statusText');
-        const badge = document.getElementById('brainBadge');
         const btnStart = document.getElementById('btnStart');
         const btnStop = document.getElementById('btnStop');
+        const badge = document.getElementById('brainBadge');
         const errorEl = document.getElementById('brainError');
 
-        dot.className = 'status-indicator ' + brainStatus;
-        text.textContent = STATUS_LABELS[brainStatus] || brainStatus;
-
-        badge.textContent = STATUS_LABELS[brainStatus] || brainStatus;
-        badge.className = 'brain-status-badge badge-' + brainStatus;
-
-        btnStart.disabled = brainStatus === 'running' || brainStatus === 'starting' || brainStatus === 'stopping';
-        btnStop.disabled = brainStatus !== 'running' && brainStatus !== 'starting';
-
-        errorEl.textContent = status.brain_error || '';
-
-        // Dashboard button state
-        const btnDashboard = document.querySelector('.btn-dashboard');
-        const dashNote = document.querySelector('.card-note');
-        if (btnDashboard) {
-            btnDashboard.disabled = !status.dashboard_available;
-            if (status.dashboard_available) {
-                dashNote.textContent = '✅ 儀表板已就緒，點擊即可開啟';
-                dashNote.style.color = 'var(--green)';
-            } else {
-                dashNote.textContent = '⚠️ 需要先啟動交易大腦才能使用儀表板';
-                dashNote.style.color = '';
-            }
+        if (data.brain_status === 'running') {
+            if (btnStart) { btnStart.disabled = true; btnStart.innerHTML = '<span class="btn-icon">▶</span> 啟動'; }
+            if (btnStop) { btnStop.disabled = false; btnStop.innerHTML = '<span class="btn-icon">⏹</span> 停止'; }
+            if (badge) { badge.textContent = '運行中'; badge.className = 'brain-status-badge running'; }
+            if (errorEl) errorEl.textContent = '';
+        } else if (data.brain_status === 'starting') {
+            if (btnStart) { btnStart.disabled = true; btnStart.innerHTML = '<span class="spinner"></span> 啟動中...'; }
+            if (btnStop) { btnStop.disabled = true; }
+            if (badge) { badge.textContent = '啟動中...'; badge.className = 'brain-status-badge starting'; }
+        } else if (data.brain_status === 'error') {
+            if (btnStart) { btnStart.disabled = false; btnStart.innerHTML = '<span class="btn-icon">▶</span> 啟動'; }
+            if (btnStop) { btnStop.disabled = true; }
+            if (badge) { badge.textContent = '錯誤'; badge.className = 'brain-status-badge error'; }
+            if (errorEl) errorEl.textContent = data.brain_error || '未知錯誤';
+        } else {
+            if (btnStart) { btnStart.disabled = false; btnStart.innerHTML = '<span class="btn-icon">▶</span> 啟動'; }
+            if (btnStop) { btnStop.disabled = true; }
+            if (badge) { badge.textContent = '已停止'; badge.className = 'brain-status-badge'; }
+            if (errorEl) errorEl.textContent = '';
         }
 
-        // Setup status
-        const setupStatus = status.setup_status;
-        const setupBadge = document.getElementById('setupBadge');
-        const setupMsg = document.getElementById('setupMessage');
         const btnSetup = document.getElementById('btnSetup');
-
-        setupBadge.textContent = SETUP_LABELS[setupStatus] || setupStatus;
-        setupBadge.className = 'setup-status-badge badge-' + (setupStatus === 'success' ? 'success' : setupStatus === 'error' ? 'error' : setupStatus === 'running' ? 'starting' : 'idle');
-
-        setupMsg.textContent = status.setup_message || '';
-
-        if (setupStatus !== 'running') {
-            btnSetup.disabled = false;
-            btnSetup.innerHTML = '<span class="btn-icon">🔧</span> 執行設定';
+        const setupBadge = document.getElementById('setupBadge');
+        if (data.setup_status === 'running') {
+            if (btnSetup) { btnSetup.disabled = true; btnSetup.innerHTML = '<span class="spinner"></span> 設定中...'; }
+            if (setupBadge) { setupBadge.textContent = '設定中'; setupBadge.className = 'setup-status-badge running'; }
+        } else if (data.setup_status === 'success') {
+            if (btnSetup) { btnSetup.disabled = false; btnSetup.innerHTML = '<span class="btn-icon">🔧</span> 執行設定'; }
+            if (setupBadge) { setupBadge.textContent = '設定成功'; setupBadge.className = 'setup-status-badge success'; }
+        } else {
+            if (btnSetup) { btnSetup.disabled = false; btnSetup.innerHTML = '<span class="btn-icon">🔧</span> 執行設定'; }
+            if (setupBadge) { setupBadge.textContent = '待設定'; setupBadge.className = 'setup-status-badge'; }
         }
     } catch (e) {
-        // server not responding
+        console.error('Status poll failed:', e);
     }
 }
-
-// ─── Log Polling ────────────────────────────────
-
-let lastLogCount = 0;
 
 async function pollLogs() {
     try {
-        const res = await fetch(API + '/api/logs?n=200');
+        const res = await fetch(API + '/api/logs?n=100');
         const logs = await res.json();
         const container = document.getElementById('logContainer');
+        if (!container) return;
 
-        if (logs.length === 0) {
-            if (lastLogCount === 0) return;
-            container.innerHTML = '<div class="log-empty">啟動交易大腦後，日誌會顯示在這裡</div>';
-            lastLogCount = 0;
-            return;
-        }
+        const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 50;
+        container.innerHTML = logs.map(line => {
+            let cls = 'log-line';
+            if (line.includes('| ERROR   |')) cls += ' level-error';
+            if (line.includes('| WARNING |')) cls += ' level-warning';
+            if (line.includes('| SUCCESS |')) cls += ' level-success';
+            return `<div class="${cls}">${line}</div>`;
+        }).join('');
+        if (isAtBottom) container.scrollTop = container.scrollHeight;
+    } catch (e) { }
+}
 
-        if (logs.length !== lastLogCount) {
-            const autoScroll = container.scrollTop + container.clientHeight >= container.scrollHeight - 50;
-            container.innerHTML = logs.map(line => {
-                let cls = 'log-line level-info';
-                if (line.includes('WARNING') || line.includes('⚠')) cls = 'log-line level-warning';
-                else if (line.includes('ERROR') || line.includes('❌')) cls = 'log-line level-error';
-                else if (line.includes('完成') || line.includes('✅') || line.includes('PASS') || line.includes('成功')) cls = 'log-line level-success';
-                return `<div class="${cls}">${escapeHtml(line)}</div>`;
-            }).join('');
+// ─── Dashboard Data ─────────────────────────────
 
-            if (autoScroll) {
-                container.scrollTop = container.scrollHeight;
-            }
-            lastLogCount = logs.length;
-        }
+const BRAIN_API = `http://${window.location.hostname}:8888/api`;
+
+async function fetchBrainAPI(endpoint) {
+    if (!window.brainAuth) return null;
+    try {
+        const res = await fetch(BRAIN_API + endpoint, {
+            headers: { 'Authorization': 'Basic ' + window.brainAuth }
+        });
+        if (!res.ok) return null;
+        return await res.json();
     } catch (e) {
-        // ignore
+        return null;
     }
 }
 
+async function pollDashboardData() {
+    const badge = document.getElementById('brainBadge');
+    if (!badge || badge.textContent === '已停止') return;
+
+    const statusData = await fetchBrainAPI('/system/status');
+    if (statusData) {
+        const balEl = document.getElementById('valExBalance');
+        if (balEl) {
+            const eb = statusData.exchange_balance;
+            balEl.textContent = (eb !== undefined && eb !== null)
+                ? `${Number(eb).toFixed(2)} U` : '同步中...';
+        }
+
+        const initEl = document.getElementById('valInitBalance');
+        if (initEl) initEl.textContent = `${statusData.initial_balance || 0} U`;
+
+        const pnl = statusData.daily_pnl || 0;
+        const pnlEl = document.getElementById('valDailyPnl');
+        if (pnlEl) {
+            pnlEl.textContent = `${pnl > 0 ? '+' : ''}${Number(pnl).toFixed(2)} U`;
+            pnlEl.className = `wallet-val ${pnl > 0 ? 'text-green' : (pnl < 0 ? 'text-red' : '')}`;
+        }
+
+        const posEl = document.getElementById('valOpenPositions');
+        if (posEl) posEl.textContent = statusData.open_positions_count || 0;
+    }
+
+    const tradesData = await fetchBrainAPI('/trades');
+    const tradesTbody = document.querySelector('#tradesTable tbody');
+    if (tradesData && tradesTbody) {
+        if (tradesData.length === 0) {
+            tradesTbody.innerHTML = '<tr class="empty-row"><td colspan="4">尚無訂單紀錄</td></tr>';
+        } else {
+            tradesData.sort((a, b) => {
+                if (a.status === 'open' && b.status !== 'open') return -1;
+                if (b.status === 'open' && a.status !== 'open') return 1;
+                return new Date(b.entry_time) - new Date(a.entry_time);
+            });
+            tradesTbody.innerHTML = tradesData.slice(0, 15).map(t => {
+                const sideClass = t.direction === 'LONG' ? 'text-long' : 'text-short';
+                const pnl = t.pnl_usdt !== null ? Number(t.pnl_usdt) : 0;
+                let pnlStr = '—';
+                let pnlClass = '';
+                if (t.status === 'closed') {
+                    pnlStr = `${pnl > 0 ? '+' : ''}${pnl.toFixed(2)} U`;
+                    pnlClass = pnl > 0 ? 'text-green' : 'text-red';
+                } else if (t.status === 'open') { pnlStr = '(持有中)'; }
+
+                return `<tr>
+                    <td>${formatVNTime(t.entry_time)}</td>
+                    <td style="font-weight:600;">${t.symbol.replace('USDT', '')}</td>
+                    <td><span class="${sideClass}">${t.direction}</span></td>
+                    <td class="${pnlClass}">${pnlStr}</td>
+                </tr>`;
+            }).join('');
+        }
+    }
+
+    const signalsData = await fetchBrainAPI('/signals');
+    const signalsTbody = document.querySelector('#signalsTable tbody');
+    if (signalsData && signalsTbody) {
+        if (signalsData.length === 0) {
+            signalsTbody.innerHTML = '<tr class="empty-row"><td colspan="5">尚未產生信號</td></tr>';
+        } else {
+            signalsTbody.innerHTML = signalsData.slice(0, 15).map(s => {
+                const sideClass = s.signal_type === 'LONG' ? 'text-long' : 'text-short';
+                return `<tr>
+                    <td>${formatVNTimeLocal(s.timestamp)}</td>
+                    <td style="font-weight:600;">${s.symbol.replace('USDT', '')}</td>
+                    <td>${s.timeframe}</td>
+                    <td><span class="${sideClass}">${s.signal_type}</span></td>
+                    <td>${(s.confidence * 100).toFixed(0)}%</td>
+                </tr>`;
+            }).join('');
+        }
+    }
+}
+
+function formatVNTime(isoString) {
+    if (!isoString) return '—';
+    const d = new Date(isoString + 'Z');
+    return d.toLocaleString('zh-TW', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+        month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    });
+}
+function formatVNTimeLocal(isoString) {
+    if (!isoString) return '—';
+    const d = new Date(isoString);
+    return d.toLocaleString('zh-TW', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+        month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    });
+}
 function clearLogs() {
-    document.getElementById('logContainer').innerHTML = '<div class="log-empty">日誌已清除</div>';
-    lastLogCount = 0;
+    const container = document.getElementById('logContainer');
+    if (container) container.innerHTML = '<div class="log-empty">已清除。</div>';
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// ─── Initialize ─────────────────────────────────
+// ─── Init ──────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
     loadEnv();
     pollStatus();
     pollLogs();
-
-    // Poll every 1.5 seconds
     setInterval(pollStatus, 1500);
     setInterval(pollLogs, 1500);
+    setInterval(pollDashboardData, 2500);
 });

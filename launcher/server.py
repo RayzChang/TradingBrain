@@ -39,7 +39,7 @@ def get_env():
     return bridge.load_env()
 
 @app.post("/api/env")
-async def save_env(data: dict):
+def save_env(data: dict):
     return bridge.save_env(data)
 
 @app.post("/api/setup")
@@ -63,9 +63,7 @@ def get_status():
 def get_logs(n: int = 80):
     return bridge.get_logs(n)
 
-@app.post("/api/dashboard")
-def open_dashboard():
-    return bridge.open_dashboard()
+
 
 # ─── 靜態檔案伺服 ────────────────────────────────────
 

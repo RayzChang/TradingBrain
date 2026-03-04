@@ -21,7 +21,7 @@ export default function Signals() {
   useEffect(() => {
     signalsApi
       .list(80)
-      .then(setList as (a: unknown) => void)
+      .then((data) => setList(data as Signal[]))
       .catch((e) => setErr(String(e)));
   }, []);
 

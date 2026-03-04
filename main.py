@@ -81,6 +81,28 @@ class TradingBrain:
     async def startup(self) -> None:
         """系統啟動序列"""
         setup_logger()
+        
+        # 0. 啟動 Web API（儀表板後端，背景執行）- 優先啟動以便 UI 能連線
+        from config.settings import API_PORT
+        def _run_api():
+            import uvicorn
+            uvicorn.run(
+                "api.app:app",
+                host="0.0.0.0",
+                port=API_PORT,
+                log_level="warning",
+            )
+        api_thread = threading.Thread(target=_run_api, daemon=True)
+        api_thread.start()
+        logger.info(f"儀表板 API 已啟動於: http://0.0.0.0:{API_PORT}")
+
+        # ── 注入共用 DB 給 API 層（避免雙實例衝突）──
+        # 1. 初始化資料庫（提前到 API 注入前）
+        self.db = DatabaseManager()
+        logger.info("資料庫初始化完成 (SQLite-WAL)")
+        from api.deps import set_db
+        set_db(self.db)
+
         logger.info("=" * 60)
         logger.info("TradingBrain 啟動中...")
         logger.info(f"交易模式: {TRADING_MODE}")
@@ -90,9 +112,7 @@ class TradingBrain:
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         KLINE_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-        # 1. 初始化資料庫
-        self.db = DatabaseManager()
-        logger.info("資料庫初始化完成 (SQLite-WAL)")
+        # 1. 資料庫已在上方初始化（API 注入後）
 
         # 2. 載入風控預設參數
         self._load_risk_defaults()
@@ -173,33 +193,11 @@ class TradingBrain:
             f"風控: {max_risk_pct:.1f}% 風險 / {max_lev}x 槓桿 / SL={sl_atr}ATR / TP={tp_atr}ATR"
         )
 
-        # 8. 啟動 Web API（儀表板後端，背景執行）
-        def _run_api():
-            import uvicorn
-            uvicorn.run(
-                "api.app:app",
-                host="0.0.0.0",
-                port=API_PORT,
-                log_level="warning",
-            )
-        api_thread = threading.Thread(target=_run_api, daemon=True)
-        api_thread.start()
-        logger.info(f"儀表板 API: http://0.0.0.0:{API_PORT}")
 
-        # 自動在背景啟動前端 Vite 開發伺服器 (避開 npm run build 失敗問題)
-        import subprocess, sys
-        try:
-            npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-            self._vite_proc = subprocess.Popen(
-                f"{npm_cmd} run dev", 
-                cwd="frontend", 
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            logger.info("✅ 已自動在背景啟動 Vite 前端 (http://localhost:5173)")
-        except Exception as e:
-            logger.warning(f"自動啟動 Vite 失敗，請手動 cd frontend && npm run dev: {e}")
+
+        # 提示用戶儀表板已整合至啟動器
+        logger.info(f"儀表板 API: http://0.0.0.0:{API_PORT}")
+        logger.info("✅ 儀表板已與主控台整合，請前往 http://localhost:8899 查看即時數據")
 
     def _load_risk_defaults(self) -> None:
         """從 risk_defaults.json 載入預設風控參數"""
@@ -214,8 +212,9 @@ class TradingBrain:
         preset_params = config.get("presets", {}).get(active_preset, {})
 
         if preset_params:
-            label = preset_params.pop("label", active_preset)
-            self.db.load_risk_defaults(preset_params)
+            label = preset_params.get("label", active_preset)
+            params_to_load = {k: v for k, v in preset_params.items() if k != "label"}
+            self.db.load_risk_defaults(params_to_load)
             self.db.set_risk_param(
                 "active_preset", active_preset, changed_by="system_default"
             )
@@ -646,12 +645,6 @@ class TradingBrain:
         if self.liquidation_monitor:
             await self.liquidation_monitor.close()
 
-        if hasattr(self, "_vite_proc") and self._vite_proc:
-            try:
-                self._vite_proc.terminate()
-                logger.info("已終止 Vite 前端伺服器")
-            except Exception:
-                pass
 
         logger.info("TradingBrain 已安全關閉")
 

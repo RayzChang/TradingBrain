@@ -89,6 +89,13 @@ class LauncherBridge:
             if "=" in line:
                 key, _, value = line.partition("=")
                 result[key.strip()] = value.strip()
+        
+        # 確保有預設的 DASHBOARD 帳密供 UI 連線使用
+        if "DASHBOARD_USERNAME" not in result:
+            result["DASHBOARD_USERNAME"] = "admin"
+        if "DASHBOARD_PASSWORD" not in result:
+            result["DASHBOARD_PASSWORD"] = "changeme"
+            
         return result
 
     def save_env(self, data: dict[str, str]) -> dict[str, Any]:
@@ -224,15 +231,7 @@ class LauncherBridge:
         """取得最近 N 行日誌"""
         return self.log_capture.get_lines(last_n)
 
-    # ─── 儀表板 ──────────────────────────────────────────
 
-    def open_dashboard(self) -> dict[str, Any]:
-        """在瀏覽器中開啟儀表板"""
-        if self._status != "running":
-            return {"success": False, "message": "請先啟動交易大腦，儀表板才能使用"}
-        url = "http://localhost:5173"
-        webbrowser.open(url)
-        return {"success": True, "message": f"已開啟 {url} (Vite 開發伺服器)"}
 
     # ─── 內部工具 ─────────────────────────────────────────
 
@@ -241,7 +240,11 @@ class LauncherBridge:
         """強制重新載入 config.settings（讓新 .env 生效）"""
         from dotenv import load_dotenv
         load_dotenv(ROOT_DIR / ".env", override=True)
+        import importlib
         # 重新載入 settings 模組
         if "config.settings" in sys.modules:
-            import importlib
             importlib.reload(sys.modules["config.settings"])
+        # 重新載入依賴 settings 的模組，使 from-import 名稱綁定更新
+        for mod_name in ("core.execution.execution_engine", "main"):
+            if mod_name in sys.modules:
+                importlib.reload(sys.modules[mod_name])

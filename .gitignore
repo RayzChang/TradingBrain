@@ -54,3 +54,15 @@ frontend/vite.config.js
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Build logs & temp files
+frontend/*.log
+frontend/out.txt
+*.log
+
+# SQLite WAL/SHM
+*.db-wal
+*.db-shm
+
+# Data temp scripts
+data/screenshot_test.py

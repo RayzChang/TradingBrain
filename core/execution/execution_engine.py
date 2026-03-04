@@ -157,6 +157,7 @@ async def execute_trade(
         "entry_reason": getattr(signal, "reason", None) or "strategy",
         "strategy_name": strategy_name,
         "opened_at": opened_at,
+        "exchange_order_id": str(order_id),
     }
     trade_id = db.insert_trade(trade_data)
     logger.info(f"執行完成: trade_id={trade_id} {symbol} {signal.signal_type} orderId={order_id}")

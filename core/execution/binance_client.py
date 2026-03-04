@@ -59,6 +59,12 @@ class BinanceFuturesClient:
         self._time_offset: int = 0  # 本地與伺服器的時間差 (ms)
         self._time_synced: bool = False
 
+    async def _get_client(self) -> httpx.AsyncClient:
+        """取得共用 httpx 連線池（懶初始化）"""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=15.0)
+        return self._client
+
     async def _sync_time(self) -> None:
         """同步本地時鐘與幣安伺服器，計算偏移量（只需一次）"""
         if self._time_synced:
@@ -78,8 +84,8 @@ class BinanceFuturesClient:
         except Exception as e:
             logger.warning(f"伺服器時間同步失敗: {e}，使用本地時間")
 
-    def _sign(self, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        """加入 timestamp、recvWindow 並計算 signature，回傳 (query_string, params)"""
+    def _sign(self, params: dict[str, Any]) -> str:
+        """加入 timestamp、recvWindow 並計算 signature，回傳完整 query_string"""
         params = dict(params)
         # 使用校正後的時間戳
         params["timestamp"] = int(time.time() * 1000) + self._time_offset
@@ -90,10 +96,7 @@ class BinanceFuturesClient:
             query.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
-        params["signature"] = sig
-        # 回傳完整 query string（含 signature），確保順序一致
-        full_query = f"{query}&signature={sig}"
-        return full_query, params
+        return f"{query}&signature={sig}"
 
     async def _request(
         self,
@@ -111,16 +114,16 @@ class BinanceFuturesClient:
         await self.limiter.acquire(weight=weight, is_order=is_order)
         url = f"{self.base_url}{path}"
         params = params or {}
-        query_string, params = self._sign(params)
+        query_string = self._sign(params)
         headers = {"X-MBX-APIKEY": self.api_key}
 
         # 直接用 query string 拼接 URL，確保簽名順序與發送順序一致
         full_url = f"{url}?{query_string}"
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            if method == "GET":
-                resp = await client.get(full_url, headers=headers)
-            else:
-                resp = await client.post(full_url, headers=headers)
+        client = await self._get_client()
+        if method == "GET":
+            resp = await client.get(full_url, headers=headers)
+        else:
+            resp = await client.post(full_url, headers=headers)
         self.limiter.update_from_headers(dict(resp.headers))
         if resp.status_code != 200:
             logger.error(
@@ -134,8 +137,8 @@ class BinanceFuturesClient:
         if symbol in self._symbol_info_cache:
             return self._symbol_info_cache[symbol]
         await self.limiter.acquire(weight=40)
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(f"{self.base_url}/fapi/v1/exchangeInfo")
+        client = await self._get_client()
+        resp = await client.get(f"{self.base_url}/fapi/v1/exchangeInfo")
         resp.raise_for_status()
         data = resp.json()
         for s in data.get("symbols", []):
@@ -156,8 +159,8 @@ class BinanceFuturesClient:
     async def get_ticker_price(self, symbol: str) -> Optional[float]:
         """取得指定交易對最新價（GET /fapi/v1/ticker/price，公開接口）"""
         await self.limiter.acquire(weight=1)
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{self.base_url}/fapi/v1/ticker/price", params={"symbol": symbol})
+        client = await self._get_client()
+        resp = await client.get(f"{self.base_url}/fapi/v1/ticker/price", params={"symbol": symbol})
         resp.raise_for_status()
         data = resp.json()
         return float(data.get("price", 0)) if data.get("price") else None
