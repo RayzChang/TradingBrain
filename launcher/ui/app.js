@@ -265,31 +265,33 @@ async function pollDashboardData() {
         if (posEl) posEl.textContent = statusData.open_positions_count || 0;
     }
 
-    const tradesData = await fetchBrainAPI('/trades');
+    const tradesData = await fetchBrainAPI('/trades/today');
     const tradesTbody = document.querySelector('#tradesTable tbody');
     if (tradesData && tradesTbody) {
         if (tradesData.length === 0) {
-            tradesTbody.innerHTML = '<tr class="empty-row"><td colspan="4">尚無訂單紀錄</td></tr>';
+            tradesTbody.innerHTML = '<tr class="empty-row"><td colspan="4">今日尚無交易紀錄</td></tr>';
         } else {
             tradesData.sort((a, b) => {
-                if (a.status === 'open' && b.status !== 'open') return -1;
-                if (b.status === 'open' && a.status !== 'open') return 1;
-                return new Date(b.entry_time) - new Date(a.entry_time);
+                if (a.status === 'OPEN' && b.status !== 'OPEN') return -1;
+                if (b.status === 'OPEN' && a.status !== 'OPEN') return 1;
+                return new Date(b.opened_at || 0) - new Date(a.opened_at || 0);
             });
             tradesTbody.innerHTML = tradesData.slice(0, 15).map(t => {
-                const sideClass = t.direction === 'LONG' ? 'text-long' : 'text-short';
-                const pnl = t.pnl_usdt !== null ? Number(t.pnl_usdt) : 0;
+                const side = t.side || t.direction || '—';
+                const sideClass = side === 'LONG' ? 'text-long' : 'text-short';
+                const pnl = t.pnl_usdt !== null && t.pnl_usdt !== undefined ? Number(t.pnl_usdt) : 0;
                 let pnlStr = '—';
                 let pnlClass = '';
-                if (t.status === 'closed') {
+                const st = (t.status || '').toUpperCase();
+                if (st === 'CLOSED') {
                     pnlStr = `${pnl > 0 ? '+' : ''}${pnl.toFixed(2)} U`;
                     pnlClass = pnl > 0 ? 'text-green' : 'text-red';
-                } else if (t.status === 'open') { pnlStr = '(持有中)'; }
+                } else if (st === 'OPEN') { pnlStr = '(持有中)'; }
 
                 return `<tr>
-                    <td>${formatVNTime(t.entry_time)}</td>
-                    <td style="font-weight:600;">${t.symbol.replace('USDT', '')}</td>
-                    <td><span class="${sideClass}">${t.direction}</span></td>
+                    <td>${formatVNTime(t.opened_at)}</td>
+                    <td style="font-weight:600;">${(t.symbol || '').replace('USDT', '')}</td>
+                    <td><span class="${sideClass}">${side}</span></td>
                     <td class="${pnlClass}">${pnlStr}</td>
                 </tr>`;
             }).join('');
@@ -304,12 +306,13 @@ async function pollDashboardData() {
         } else {
             signalsTbody.innerHTML = signalsData.slice(0, 15).map(s => {
                 const sideClass = s.signal_type === 'LONG' ? 'text-long' : 'text-short';
+                const str = s.strength !== null && s.strength !== undefined ? (s.strength * 100).toFixed(0) + '%' : '—';
                 return `<tr>
-                    <td>${formatVNTimeLocal(s.timestamp)}</td>
-                    <td style="font-weight:600;">${s.symbol.replace('USDT', '')}</td>
+                    <td>${formatVNTime(s.created_at)}</td>
+                    <td style="font-weight:600;">${(s.symbol || '').replace('USDT', '')}</td>
                     <td>${s.timeframe}</td>
                     <td><span class="${sideClass}">${s.signal_type}</span></td>
-                    <td>${(s.confidence * 100).toFixed(0)}%</td>
+                    <td>${str}</td>
                 </tr>`;
             }).join('');
         }
