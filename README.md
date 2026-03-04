@@ -236,6 +236,24 @@ python main.py
 
 ---
 
+## 2026-03-04 v3.2 決策日誌 + 幣種擴充
+
+### 決策日誌系統（覆盤核心）
+- 新增 `analysis_logs` 資料表，每 15 分鐘分析週期寫入完整決策鏈
+- **市場快照**：記錄分析當下的 RSI / ADX / MACD / BB / ATR / EMA / MTF 方向
+- **決策分類**：`NO_SIGNAL`（無信號）→ `VETOED`（被否決）→ `RISK_BLOCKED`（風控攔截）→ `EXECUTED`（已執行）
+- 否決原因、風控攔截原因均完整記錄，供覆盤分析
+
+### 幣種擴充
+- Watchlist 10 → **20 幣種**（新增 MATIC / NEAR / ARB / OP / APT / SUI / ATOM / FIL / LTC / UNI）
+- 增加開單機會 + 更多市場對照數據
+
+### 數據量提升
+- K 線快取 200 → **500 根**（15m=5 天 / 1h=20 天 / 4h=83 天）
+- REST 預載 100 → **500 根**，EMA200 / 斐波那契 / 背離偵測更精準
+
+---
+
 ## 安全提醒
 
 - ⚠️ **不要把 .env 上傳到 Git**（已在 .gitignore 中）
@@ -245,4 +263,4 @@ python main.py
 
 ---
 
-**Made with 🤖 by TradingBrain v3.1**
+**Made with 🤖 by TradingBrain v3.2**
