@@ -279,7 +279,7 @@ async function pollDashboardData() {
             tradesTbody.innerHTML = tradesData.slice(0, 15).map(t => {
                 const side = t.side || t.direction || '—';
                 const sideClass = side === 'LONG' ? 'text-long' : 'text-short';
-                const pnl = t.pnl_usdt !== null && t.pnl_usdt !== undefined ? Number(t.pnl_usdt) : 0;
+                const pnl = t.pnl !== null && t.pnl !== undefined ? Number(t.pnl) : 0;
                 let pnlStr = '—';
                 let pnlClass = '';
                 const st = (t.status || '').toUpperCase();
