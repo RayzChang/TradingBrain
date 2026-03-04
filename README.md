@@ -213,6 +213,29 @@ python main.py
 
 ---
 
+## 2026-03-04 v3.1 健康檢查修復
+
+### 嚴重修復
+- **風控設定保護**：`_load_risk_defaults` 中 `pop()` 會破壞原始預設資料 → 改用 `get()` 非破壞性讀取
+- **DB 實例統一**：`main.py` 與 API 各建一個 `DatabaseManager` → 注入共用實例（`set_db()`）
+- **API Rate Limit 保護**：`system_status` 每次輪詢都建新 `BinanceFuturesClient` → 30 秒 TTL 快取
+- **交易追蹤**：實盤下單未儲存 `exchange_order_id` → 補上交易所單號記錄
+
+### 效能與穩定性
+- **設定重載修復**：Launcher 改 `.env` 後啟動仍用舊值 → 級聯 reload 依賴模組
+- **連線池**：每次 API 呼叫新建 `httpx.AsyncClient` → 共用連線池
+- **線程安全**：`KlineCache` 加 `threading.Lock` 防止 WS/REST 並發寫入衝突
+- **簽名清理**：`_sign()` 簡化回傳，移除冗餘 params dict
+
+### 前端與雜項
+- 前端 `localhost:8888` 硬編碼 → 動態 `window.location.hostname`
+- Launcher API sync/async 風格統一
+- `Signals.tsx` 不安全 type assertion 修正
+- CORS 補上 8888 來源
+- `.gitignore` 補上 build logs / WAL / temp 規則
+
+---
+
 ## 安全提醒
 
 - ⚠️ **不要把 .env 上傳到 Git**（已在 .gitignore 中）
@@ -222,4 +245,4 @@ python main.py
 
 ---
 
-**Made with 🤖 by TradingBrain v3**
+**Made with 🤖 by TradingBrain v3.1**
