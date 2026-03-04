@@ -94,9 +94,11 @@ async def execute_trade(
             "exchange_order_id": "PAPER",
         }
         trade_id = db.insert_trade(trade_data)
+        paper_margin = size_usdt / leverage if leverage else size_usdt
         msg = (
             f"🧪 TradingBrain 模擬開倉 (paper)\n"
-            f"{symbol} {signal.signal_type} | 約 {size_usdt:.0f}U @ {entry_price:.2f} | 槓桿 {leverage}x"
+            f"{symbol} {signal.signal_type} | 保證金: {paper_margin:.0f}U | 倉位: {size_usdt:.0f}U ({leverage}x)\n"
+            f"進場: {entry_price:.2f}"
         )
         send_line_message(msg)
         logger.info(f"paper 開倉完成: trade_id={trade_id} {symbol} {signal.signal_type}")
@@ -166,10 +168,11 @@ async def execute_trade(
     mode = "Testnet" if BINANCE_TESTNET else "實盤"
     sl_text = f"{stop_loss:.4f}" if stop_loss else "無"
     tp_text = f"{take_profit:.4f}" if take_profit else "無"
+    margin_cost = size_usdt / leverage if leverage else size_usdt
     open_msg = (
         f"📈 TradingBrain 開倉 ({mode})\n"
         f"{symbol} {signal.signal_type} | 策略: {strategy_name}\n"
-        f"金額: 約 {size_usdt:.0f} U | 槓桿: {leverage}x\n"
+        f"保證金: {margin_cost:.0f} U | 倉位: {size_usdt:.0f} U ({leverage}x)\n"
         f"進場: {entry_price:.4f}\n"
         f"止損: {sl_text} | 止盈: {tp_text}"
     )
