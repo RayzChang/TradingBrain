@@ -249,7 +249,7 @@ class TradingBrain:
             for symbol in DEFAULT_WATCHLIST:
                 for tf in timeframes:
                     try:
-                        df = await fetcher.fetch_klines(symbol, tf, limit=100)
+                        df = await fetcher.fetch_klines(symbol, tf, limit=500)
                         if df.empty or len(df) < min_bars:
                             logger.warning(f"預載 {symbol} {tf}: 僅 {len(df)} 根，跳過")
                             continue
@@ -409,8 +409,82 @@ class TradingBrain:
             f"信心={snapshot.get('mtf', {}).get('confidence', 0):.0%}"
         )
 
+        # ── 市場快照（開單當下的指標數值，供覆盤分析）──
+        primary = full.single_tf_results.get(full.primary_tf)
+        market_snap = {}
+        if primary and primary.df_enriched is not None:
+            df_e = primary.df_enriched
+            last_row = df_e.iloc[-1] if len(df_e) > 0 else None
+            if last_row is not None:
+                market_snap = {
+                    "close": float(last_row.get("close", 0)),
+                    "rsi": round(float(last_row.get("rsi", 0)), 2) if "rsi" in df_e.columns else None,
+                    "adx": round(float(last_row.get("adx", 0)), 2) if "adx" in df_e.columns else None,
+                    "macd": round(float(last_row.get("macd", 0)), 4) if "macd" in df_e.columns else None,
+                    "macd_signal": round(float(last_row.get("macd_signal", 0)), 4) if "macd_signal" in df_e.columns else None,
+                    "bb_upper": round(float(last_row.get("bb_upper", 0)), 2) if "bb_upper" in df_e.columns else None,
+                    "bb_lower": round(float(last_row.get("bb_lower", 0)), 2) if "bb_lower" in df_e.columns else None,
+                    "atr": round(float(last_row.get("atr", 0)), 4) if "atr" in df_e.columns else None,
+                    "ema_fast": round(float(last_row.get("ema_fast", 0)), 2) if "ema_fast" in df_e.columns else None,
+                    "ema_slow": round(float(last_row.get("ema_slow", 0)), 2) if "ema_slow" in df_e.columns else None,
+                    "volume": float(last_row.get("volume", 0)),
+                    "mtf_direction": snapshot.get("mtf", {}).get("direction"),
+                    "mtf_alignment": snapshot.get("mtf", {}).get("alignment"),
+                    "mtf_confidence": snapshot.get("mtf", {}).get("confidence"),
+                }
+        market_snap_json = json.dumps(market_snap, ensure_ascii=False) if market_snap else None
+
         # 策略評估 + 否決過濾，通過信號寫入 DB
         agg_result = self.signal_aggregator.evaluate(full, save_to_db=True)
+
+        # ── 決策日誌：記錄完整決策鏈 ──
+        if agg_result.passed or agg_result.vetoed:
+            # 記錄所有通過的信號
+            for sig in agg_result.passed:
+                self.db.insert_analysis_log({
+                    "symbol": sig.symbol,
+                    "timeframe": full.primary_tf,
+                    "strategy_name": sig.strategy_name,
+                    "signal_generated": 1,
+                    "signal_type": sig.signal_type,
+                    "signal_strength": sig.strength,
+                    "veto_passed": 1,
+                    "veto_reasons": None,
+                    "veto_details": None,
+                    "final_action": "PENDING_RISK",
+                    "market_snapshot": market_snap_json,
+                })
+            # 記錄所有被否決的信號
+            for sig, reason in agg_result.vetoed:
+                self.db.insert_analysis_log({
+                    "symbol": sig.symbol,
+                    "timeframe": full.primary_tf,
+                    "strategy_name": sig.strategy_name,
+                    "signal_generated": 1,
+                    "signal_type": sig.signal_type,
+                    "signal_strength": sig.strength,
+                    "veto_passed": 0,
+                    "veto_reasons": reason,
+                    "veto_details": None,
+                    "final_action": "VETOED",
+                    "market_snapshot": market_snap_json,
+                })
+        else:
+            # 沒有任何信號產生 — 記錄「為什麼不開單」
+            self.db.insert_analysis_log({
+                "symbol": symbol,
+                "timeframe": full.primary_tf,
+                "strategy_name": None,
+                "signal_generated": 0,
+                "signal_type": None,
+                "signal_strength": None,
+                "veto_passed": None,
+                "veto_reasons": None,
+                "veto_details": None,
+                "final_action": "NO_SIGNAL",
+                "market_snapshot": market_snap_json,
+            })
+
         if agg_result.passed:
             logger.info(f"信號通過否決: {symbol} -> {len(agg_result.passed)} 筆")
         if agg_result.vetoed:
@@ -420,7 +494,6 @@ class TradingBrain:
             )
 
         # 風控評估：通過否決的信號進入風控（倉位/止損/熔斷/冷卻）
-        primary = full.single_tf_results.get(full.primary_tf)
         if not primary or primary.df_enriched is None:
             primary = None
         # 模擬/實盤時使用交易所餘額，否則使用設定初始餘額
@@ -445,6 +518,19 @@ class TradingBrain:
                     trade_id = await execute_trade(
                         sig, risk_result, float(entry_price), self.db, sig.strategy_name
                     )
+                    # 更新決策日誌：風控通過 + 最終動作
+                    self.db.insert_analysis_log({
+                        "symbol": sig.symbol,
+                        "timeframe": full.primary_tf,
+                        "strategy_name": sig.strategy_name,
+                        "signal_generated": 1,
+                        "signal_type": sig.signal_type,
+                        "signal_strength": sig.strength,
+                        "veto_passed": 1,
+                        "risk_passed": 1,
+                        "final_action": "EXECUTED" if trade_id else "EXCHANGE_REJECTED",
+                        "market_snapshot": market_snap_json,
+                    })
                     if trade_id:
                         open_trades = self.db.get_open_trades()
                     else:
@@ -455,6 +541,20 @@ class TradingBrain:
                             f"size={risk_result.size_usdt}U sl={risk_result.stop_loss}"
                         )
                 else:
+                    # 更新決策日誌：風控攔截
+                    self.db.insert_analysis_log({
+                        "symbol": sig.symbol,
+                        "timeframe": full.primary_tf,
+                        "strategy_name": sig.strategy_name,
+                        "signal_generated": 1,
+                        "signal_type": sig.signal_type,
+                        "signal_strength": sig.strength,
+                        "veto_passed": 1,
+                        "risk_passed": 0,
+                        "risk_reason": risk_result.reason,
+                        "final_action": "RISK_BLOCKED",
+                        "market_snapshot": market_snap_json,
+                    })
                     err_msg = f"⚠️ TradingBrain 風控攔截\n{sig.symbol} {sig.signal_type} | {sig.strategy_name}\n攔截原因: {risk_result.reason}"
                     send_line_message(err_msg)
                     logger.info(f"風控攔截: {sig.symbol} {sig.signal_type} - {risk_result.reason}")

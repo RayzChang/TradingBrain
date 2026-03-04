@@ -90,8 +90,12 @@ PRIMARY_TIMEFRAME = "15m"
 
 # === Default Watchlist (initial coins to monitor) ===
 DEFAULT_WATCHLIST = [
+    # 前 10 大（原始）
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+    # 擴充 10 個（中大市值 + 高流動性合約）
+    "MATICUSDT", "NEARUSDT", "ARBUSDT", "OPUSDT", "APTUSDT",
+    "SUIUSDT", "ATOMUSDT", "FILUSDT", "LTCUSDT", "UNIUSDT",
 ]
 
 # === 全倉/逐倉與預設槓桿（跑機器人前可用 setup_testnet.py 寫入交易所）===

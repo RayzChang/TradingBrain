@@ -284,3 +284,36 @@ class DatabaseManager:
                 "last_run=?, last_status=?, run_count=run_count+1",
                 (task_name, now, status, now, status),
             )
+
+    # ── 決策日誌 ────────────────────────────────────
+    def insert_analysis_log(self, data: dict) -> int:
+        """寫入分析決策日誌（含市場快照）"""
+        return self.execute(
+            "INSERT INTO analysis_logs "
+            "(symbol, timeframe, strategy_name, signal_generated, signal_type, "
+            "signal_strength, veto_passed, veto_reasons, veto_details, "
+            "risk_passed, risk_reason, final_action, market_snapshot) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                data.get("symbol"),
+                data.get("timeframe"),
+                data.get("strategy_name"),
+                data.get("signal_generated", 0),
+                data.get("signal_type"),
+                data.get("signal_strength"),
+                data.get("veto_passed"),
+                data.get("veto_reasons"),
+                data.get("veto_details"),
+                data.get("risk_passed"),
+                data.get("risk_reason"),
+                data.get("final_action", "NO_SIGNAL"),
+                data.get("market_snapshot"),
+            ),
+        )
+
+    def get_analysis_logs(self, limit: int = 100) -> list[dict]:
+        """取得最近的分析決策日誌"""
+        return self.fetch_all(
+            "SELECT * FROM analysis_logs ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )

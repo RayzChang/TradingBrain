@@ -21,7 +21,7 @@ from config.settings import BINANCE_WS_URL, DEFAULT_WATCHLIST, KLINE_TIMEFRAMES
 class KlineCache:
     """K 線記憶體快取 — 儲存最近 N 根 K 線供即時分析（線程安全）"""
 
-    def __init__(self, max_candles: int = 200) -> None:
+    def __init__(self, max_candles: int = 500) -> None:
         self.max_candles = max_candles
         # {symbol: {timeframe: [candle_dicts]}}
         self._data: dict[str, dict[str, list[dict]]] = defaultdict(

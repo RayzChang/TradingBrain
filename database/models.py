@@ -99,6 +99,26 @@ TABLES = {
             last_error TEXT
         )
     """,
+
+    "analysis_logs": """
+        CREATE TABLE IF NOT EXISTS analysis_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            strategy_name TEXT,
+            signal_generated INTEGER DEFAULT 0,
+            signal_type TEXT,
+            signal_strength REAL,
+            veto_passed INTEGER,
+            veto_reasons TEXT,
+            veto_details TEXT,
+            risk_passed INTEGER,
+            risk_reason TEXT,
+            final_action TEXT DEFAULT 'NO_SIGNAL',
+            market_snapshot TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """,
 }
 
 INDEXES = [
@@ -110,4 +130,7 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_market_info_type ON market_info(info_type)",
     "CREATE INDEX IF NOT EXISTS idx_market_info_fetched ON market_info(fetched_at)",
     "CREATE INDEX IF NOT EXISTS idx_risk_history_param ON risk_history(param_name)",
+    "CREATE INDEX IF NOT EXISTS idx_analysis_logs_symbol ON analysis_logs(symbol)",
+    "CREATE INDEX IF NOT EXISTS idx_analysis_logs_created ON analysis_logs(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_analysis_logs_action ON analysis_logs(final_action)",
 ]
