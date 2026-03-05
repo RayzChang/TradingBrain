@@ -177,12 +177,20 @@ class TradingBrain:
         logger.info(f"監控幣種: {', '.join(DEFAULT_WATCHLIST)}")
         logger.info(f"交易模式: {TRADING_MODE}")
 
-        # 讀取當前風控設定供 LINE 顯示
-        risk_params = self.db.get_risk_params()
-        max_risk_pct = float(risk_params.get("max_risk_per_trade", 0.03)) * 100
-        max_lev = int(risk_params.get("max_leverage", DEFAULT_LEVERAGE))
-        sl_atr = float(risk_params.get("stop_loss_atr_mult", 1.5))
-        tp_atr = float(risk_params.get("take_profit_atr_mult", 4.0))
+        # 讀取當前風控設定供 LINE 顯示（從 risk_defaults.json 讀取實際 preset）
+        try:
+            import json as _json
+            with open("config/risk_defaults.json", "r", encoding="utf-8") as _f:
+                _rd = _json.load(_f)
+            _preset_name = _rd.get("active_preset", "passive_income")
+            _preset = _rd.get("presets", {}).get(_preset_name, {})
+            max_risk_pct = float(_preset.get("max_risk_per_trade", 0.03)) * 100
+            max_lev = int(_preset.get("max_leverage", DEFAULT_LEVERAGE))
+            sl_atr = float(_preset.get("stop_loss_atr_mult", 1.5))
+            tp_atr = float(_preset.get("take_profit_atr_mult", 4.0))
+            preset_label = _preset.get("label", _preset_name)
+        except Exception:
+            max_risk_pct, max_lev, sl_atr, tp_atr, preset_label = 3.0, 5, 1.5, 4.0, "passive_income"
 
         # LINE 啟動通知
         mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
@@ -190,8 +198,8 @@ class TradingBrain:
             f"🧠 TradingBrain v4 {mode_tag} 已啟動\n"
             f"模式: {TRADING_MODE} | 幣種: {len(DEFAULT_WATCHLIST)}\n"
             f"策略: 趨勢追蹤 + 突破 + 均值回歸\n"
-            f"(市場狀態自適應 · Cyberpunk UI)\n"
-            f"風控: {max_risk_pct:.1f}% 風險 / {max_lev}x 槓桿\n"
+            f"(市場狀態自適應 · {preset_label})\n"
+            f"風控: {max_risk_pct:.0f}% 風險 / {max_lev}x 槓桿\n"
             f"SL={sl_atr}ATR / TP={tp_atr}ATR\n"
             f"📊 儀表板: http://localhost:8888"
         )

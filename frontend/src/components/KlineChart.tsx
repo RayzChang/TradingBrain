@@ -18,7 +18,7 @@ interface KlineChartProps {
 
 const TF_OPTIONS = ["1m", "5m", "15m", "1h", "4h", "1d"];
 const TF_LABELS: Record<string, string> = {
-    "1m": "1分", "5m": "5分", "15m": "15分", "1h": "1時", "4h": "4時", "1d": "日K",
+    "1m": "1分", "5m": "5分", "15m": "15分", "1h": "1時", "4h": "4時", "1d": "1日",
 };
 
 /* ═══ 技術指標計算 ═══ */
@@ -99,8 +99,14 @@ function OhlcvLegend({ data }: { data: K | null }) {
 
 /* ═══ 主元件 ═══ */
 export default function KlineChart({ symbol: initSym = "BTCUSDT", timeframe: initTf = "15m", height = 420 }: KlineChartProps) {
-    const ctnRef = useRef<HTMLDivElement>(null);
-    const chartRef = useRef<IChartApi | null>(null);
+    const mainRef = useRef<HTMLDivElement>(null);
+    const macdRef = useRef<HTMLDivElement>(null);
+    const rsiRef = useRef<HTMLDivElement>(null);
+
+    const mainChartRef = useRef<IChartApi | null>(null);
+    const macdChartRef = useRef<IChartApi | null>(null);
+    const rsiChartRef = useRef<IChartApi | null>(null);
+
     const cdlRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
     const volRef = useRef<ISeriesApi<"Histogram"> | null>(null);
     const ema7R = useRef<ISeriesApi<"Line"> | null>(null);
@@ -112,7 +118,7 @@ export default function KlineChart({ symbol: initSym = "BTCUSDT", timeframe: ini
     const mcdLR = useRef<ISeriesApi<"Line"> | null>(null);
     const mcdSR = useRef<ISeriesApi<"Line"> | null>(null);
     const mcdHR = useRef<ISeriesApi<"Histogram"> | null>(null);
-    const rsiR = useRef<ISeriesApi<"Line"> | null>(null);
+    const rsiLR = useRef<ISeriesApi<"Line"> | null>(null);
 
     const [sym, setSym] = useState(initSym);
     const [tf, setTf] = useState(initTf);
@@ -127,61 +133,79 @@ export default function KlineChart({ symbol: initSym = "BTCUSDT", timeframe: ini
 
     useEffect(() => { setSym(initSym); }, [initSym]);
 
-    /* ── 建圖 ── */
+    const chartOpts = (bg = "transparent") => ({
+        layout: { background: { color: bg }, textColor: "#6b7280", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" },
+        grid: { vertLines: { color: "rgba(100,120,180,0.06)" }, horzLines: { color: "rgba(100,120,180,0.06)" } },
+        crosshair: {
+            mode: CrosshairMode.Normal,
+            vertLine: { color: "rgba(0,240,255,0.25)", style: 2, width: 1 as const, labelBackgroundColor: "#1a1a2e" },
+            horzLine: { color: "rgba(0,240,255,0.25)", style: 2, width: 1 as const, labelBackgroundColor: "#1a1a2e" },
+        },
+        timeScale: { borderColor: "rgba(100,120,180,0.12)", timeVisible: true, secondsVisible: false, rightOffset: 3, minBarSpacing: 6 },
+        rightPriceScale: { borderColor: "rgba(100,120,180,0.12)" },
+    });
+
+    /* ── 建主圖 ── */
     useEffect(() => {
-        if (!ctnRef.current) return;
-        const chart = createChart(ctnRef.current, {
-            width: ctnRef.current.clientWidth, height,
-            layout: { background: { color: "transparent" }, textColor: "#6b7280", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" },
-            grid: { vertLines: { color: "rgba(100,120,180,0.06)" }, horzLines: { color: "rgba(100,120,180,0.06)" } },
-            crosshair: {
-                mode: CrosshairMode.Normal,
-                vertLine: { color: "rgba(0,240,255,0.25)", style: 2, width: 1, labelBackgroundColor: "#1a1a2e" },
-                horzLine: { color: "rgba(0,240,255,0.25)", style: 2, width: 1, labelBackgroundColor: "#1a1a2e" },
-            },
-            timeScale: { borderColor: "rgba(100,120,180,0.12)", timeVisible: true, secondsVisible: false, rightOffset: 3, minBarSpacing: 6 },
-            rightPriceScale: { borderColor: "rgba(100,120,180,0.12)", scaleMargins: { top: 0.05, bottom: 0.2 } },
+        if (!mainRef.current) return;
+        const mainH = showMACD && showRSI ? height - 200 : showMACD || showRSI ? height - 100 : height;
+        const chart = createChart(mainRef.current, {
+            ...chartOpts(), width: mainRef.current.clientWidth, height: mainH,
+            rightPriceScale: { borderColor: "rgba(100,120,180,0.12)", scaleMargins: { top: 0.05, bottom: 0.18 } },
         });
 
         const cdl = chart.addCandlestickSeries({
             upColor: "#26a69a", downColor: "#ef5350", borderUpColor: "#26a69a", borderDownColor: "#ef5350",
             wickUpColor: "#26a69a", wickDownColor: "#ef5350",
         });
-
         const vol = chart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "vol" });
-        chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+        chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
 
-        const ema7 = chart.addLineSeries({ color: "#f59e0b", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
-        const ema25 = chart.addLineSeries({ color: "#a855f7", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
-        const ema99 = chart.addLineSeries({ color: "#3b82f6", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+        const ema7 = chart.addLineSeries({ color: "#f59e0b", lineWidth: 1, priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false, title: "MA7" });
+        const ema25 = chart.addLineSeries({ color: "#a855f7", lineWidth: 1, priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false, title: "MA25" });
+        const ema99 = chart.addLineSeries({ color: "#3b82f6", lineWidth: 1, priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false, title: "MA99" });
 
         const bbU = chart.addLineSeries({ color: "rgba(0,240,255,0.35)", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
         const bbM = chart.addLineSeries({ color: "rgba(0,240,255,0.15)", lineWidth: 1, lineStyle: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
         const bbL = chart.addLineSeries({ color: "rgba(0,240,255,0.35)", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
-
-        const mcdL = chart.addLineSeries({ color: "#00f0ff", lineWidth: 1, priceScaleId: "macd", priceLineVisible: false, lastValueVisible: false });
-        const mcdS = chart.addLineSeries({ color: "#ff2d8a", lineWidth: 1, priceScaleId: "macd", priceLineVisible: false, lastValueVisible: false });
-        const mcdH = chart.addHistogramSeries({ priceScaleId: "macd", priceLineVisible: false, lastValueVisible: false });
-        chart.priceScale("macd").applyOptions({ scaleMargins: { top: 0.88, bottom: 0 }, autoScale: true });
-
-        const rsi = chart.addLineSeries({ color: "#f59e0b", lineWidth: 1, priceScaleId: "rsi", priceLineVisible: false, lastValueVisible: false });
-        chart.priceScale("rsi").applyOptions({ scaleMargins: { top: 0.9, bottom: 0 }, autoScale: true });
 
         chart.subscribeCrosshairMove((p) => {
             if (!p.time || !rawRef.current.length) { setHover(null); return; }
             setHover(rawRef.current.find(k => k.time === (p.time as number)) || null);
         });
 
-        chartRef.current = chart; cdlRef.current = cdl; volRef.current = vol;
+        mainChartRef.current = chart; cdlRef.current = cdl; volRef.current = vol;
         ema7R.current = ema7; ema25R.current = ema25; ema99R.current = ema99;
         bbUR.current = bbU; bbMR.current = bbM; bbLR.current = bbL;
-        mcdLR.current = mcdL; mcdSR.current = mcdS; mcdHR.current = mcdH;
-        rsiR.current = rsi;
 
-        const onResize = () => { if (ctnRef.current) chart.applyOptions({ width: ctnRef.current.clientWidth }); };
+        const onResize = () => { if (mainRef.current) chart.applyOptions({ width: mainRef.current.clientWidth }); };
         window.addEventListener("resize", onResize);
-        return () => { window.removeEventListener("resize", onResize); chart.remove(); chartRef.current = null; };
-    }, [height]);
+        return () => { window.removeEventListener("resize", onResize); chart.remove(); mainChartRef.current = null; };
+    }, [height, showMACD, showRSI]);
+
+    /* ── 建 MACD 子圖 ── */
+    useEffect(() => {
+        if (!showMACD || !macdRef.current) { macdChartRef.current = null; return; }
+        const chart = createChart(macdRef.current, { ...chartOpts(), width: macdRef.current.clientWidth, height: 100 });
+        const mcdL = chart.addLineSeries({ color: "#00f0ff", lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: "MACD" });
+        const mcdS = chart.addLineSeries({ color: "#ff2d8a", lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: "Signal" });
+        const mcdH = chart.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false });
+        macdChartRef.current = chart; mcdLR.current = mcdL; mcdSR.current = mcdS; mcdHR.current = mcdH;
+        const onResize = () => { if (macdRef.current) chart.applyOptions({ width: macdRef.current.clientWidth }); };
+        window.addEventListener("resize", onResize);
+        return () => { window.removeEventListener("resize", onResize); chart.remove(); macdChartRef.current = null; };
+    }, [showMACD]);
+
+    /* ── 建 RSI 子圖 ── */
+    useEffect(() => {
+        if (!showRSI || !rsiRef.current) { rsiChartRef.current = null; return; }
+        const chart = createChart(rsiRef.current, { ...chartOpts(), width: rsiRef.current.clientWidth, height: 100 });
+        const rsi = chart.addLineSeries({ color: "#f59e0b", lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: "RSI" });
+        rsiChartRef.current = chart; rsiLR.current = rsi;
+        const onResize = () => { if (rsiRef.current) chart.applyOptions({ width: rsiRef.current.clientWidth }); };
+        window.addEventListener("resize", onResize);
+        return () => { window.removeEventListener("resize", onResize); chart.remove(); rsiChartRef.current = null; };
+    }, [showRSI]);
 
     /* ── 數據載入 ── */
     const loadData = useCallback((refresh = false) => {
@@ -198,6 +222,7 @@ export default function KlineChart({ symbol: initSym = "BTCUSDT", timeframe: ini
                 const closes = data.klines.map(k => k.close);
                 const toLD = (v: (number | null)[], ks: K[]) => ks.map((k, i) => v[i] !== null ? { time: k.time as Time, value: v[i]! } : null).filter(Boolean) as LineData<Time>[];
 
+                // 主圖
                 cdlRef.current?.setData(data.klines.map(k => ({ time: k.time as Time, open: k.open, high: k.high, low: k.low, close: k.close })));
                 volRef.current?.setData(data.klines.map(k => ({ time: k.time as Time, value: k.volume, color: k.close >= k.open ? "rgba(38,166,154,0.35)" : "rgba(239,83,80,0.35)" })));
 
@@ -214,17 +239,24 @@ export default function KlineChart({ symbol: initSym = "BTCUSDT", timeframe: ini
                     bbLR.current?.setData(toLD(b.lower, data.klines));
                 } else { bbUR.current?.setData([]); bbMR.current?.setData([]); bbLR.current?.setData([]); }
 
-                if (showMACD) {
+                // MACD 子圖
+                if (showMACD && mcdLR.current) {
                     const m = calcMACD(closes);
-                    mcdLR.current?.setData(toLD(m.ml, data.klines));
+                    mcdLR.current.setData(toLD(m.ml, data.klines));
                     mcdSR.current?.setData(toLD(m.sig, data.klines));
-                    mcdHR.current?.setData(data.klines.map((k, i) => m.hist[i] !== null ? { time: k.time as Time, value: m.hist[i]!, color: m.hist[i]! >= 0 ? "rgba(38,166,154,0.5)" : "rgba(239,83,80,0.5)" } : null).filter(Boolean) as HistogramData<Time>[]);
-                } else { mcdLR.current?.setData([]); mcdSR.current?.setData([]); mcdHR.current?.setData([]); }
+                    mcdHR.current?.setData(data.klines.map((k, i) => m.hist[i] !== null ? { time: k.time as Time, value: m.hist[i]!, color: m.hist[i]! >= 0 ? "rgba(38,166,154,0.6)" : "rgba(239,83,80,0.6)" } : null).filter(Boolean) as HistogramData<Time>[]);
+                }
 
-                if (showRSI) { rsiR.current?.setData(toLD(calcRSI(closes), data.klines)); }
-                else { rsiR.current?.setData([]); }
+                // RSI 子圖
+                if (showRSI && rsiLR.current) {
+                    rsiLR.current.setData(toLD(calcRSI(closes), data.klines));
+                }
 
-                if (!refresh) chartRef.current?.timeScale().fitContent();
+                if (!refresh) {
+                    mainChartRef.current?.timeScale().fitContent();
+                    macdChartRef.current?.timeScale().fitContent();
+                    rsiChartRef.current?.timeScale().fitContent();
+                }
                 setLoading(false);
             })
             .catch((e) => { setError(`無法載入 ${sym}: ${e}`); setLoading(false); });
@@ -232,6 +264,21 @@ export default function KlineChart({ symbol: initSym = "BTCUSDT", timeframe: ini
 
     useEffect(() => { loadData(false); }, [loadData]);
     useEffect(() => { const t = setInterval(() => loadData(true), 1000); return () => clearInterval(t); }, [loadData]);
+
+    /* ── 同步時間軸 ── */
+    useEffect(() => {
+        const main = mainChartRef.current;
+        if (!main) return;
+        const handler = (range: any) => {
+            if (!range) return;
+            macdChartRef.current?.timeScale().setVisibleLogicalRange(range);
+            rsiChartRef.current?.timeScale().setVisibleLogicalRange(range);
+        };
+        main.timeScale().subscribeVisibleLogicalRangeChange(handler);
+        return () => {
+            main.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
+        };
+    });
 
     const Btn = ({ label, on, onClick, c }: { label: string; on: boolean; onClick: () => void; c: string }) => (
         <button onClick={onClick}
@@ -242,6 +289,7 @@ export default function KlineChart({ symbol: initSym = "BTCUSDT", timeframe: ini
 
     return (
         <div className="glass-card overflow-hidden relative">
+            {/* 頂部欄 */}
             <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--border)] flex-wrap gap-1">
                 <div className="flex items-center gap-2">
                     <h3 className="text-sm font-bold neon-text">{sym}</h3>
@@ -264,25 +312,50 @@ export default function KlineChart({ symbol: initSym = "BTCUSDT", timeframe: ini
 
             <OhlcvLegend data={hover} />
 
-            <div className="relative">
-                {error && (
-                    <div className="absolute inset-0 flex items-center justify-center z-10" style={{ background: "rgba(5,5,16,0.85)" }}>
-                        <div className="text-center">
-                            <p className="text-sm text-[var(--red)] font-mono mb-2">{error}</p>
-                            <p className="text-xs text-[var(--text-dim)]">請確認幣種名稱是否正確（合約市場）</p>
-                        </div>
+            {/* 錯誤覆蓋 */}
+            {error && (
+                <div className="absolute inset-0 flex items-center justify-center z-30" style={{ background: "rgba(5,5,16,0.85)" }}>
+                    <div className="text-center">
+                        <p className="text-sm text-[var(--red)] font-mono mb-2">{error}</p>
+                        <p className="text-xs text-[var(--text-dim)]">請確認幣種名稱是否正確（合約市場）</p>
                     </div>
-                )}
-                <div ref={ctnRef} />
-            </div>
+                </div>
+            )}
 
-            {showEMA && (
-                <div className="absolute bottom-1 left-3 z-20 flex gap-3 text-[0.55rem] font-mono pointer-events-none">
+            {/* 主圖 */}
+            <div ref={mainRef} />
+
+            {/* MACD 子圖 */}
+            {showMACD && (
+                <div className="border-t border-[var(--border)]">
+                    <span className="absolute left-3 text-[0.5rem] text-[var(--text-dim)] font-mono z-10 mt-0.5">MACD</span>
+                    <div ref={macdRef} />
+                </div>
+            )}
+
+            {/* RSI 子圖 */}
+            {showRSI && (
+                <div className="border-t border-[var(--border)]">
+                    <span className="absolute left-3 text-[0.5rem] text-[var(--text-dim)] font-mono z-10 mt-0.5">RSI(14)</span>
+                    <div ref={rsiRef} />
+                </div>
+            )}
+
+            {/* 底部圖例 */}
+            <div className="flex items-center gap-4 px-4 py-1.5 border-t border-[var(--border)] text-[0.55rem] font-mono text-[var(--text-dim)]">
+                {showEMA && <>
                     <span className="flex items-center gap-1"><span className="w-3 h-[2px] bg-[#f59e0b] inline-block" /> MA7</span>
                     <span className="flex items-center gap-1"><span className="w-3 h-[2px] bg-[#a855f7] inline-block" /> MA25</span>
                     <span className="flex items-center gap-1"><span className="w-3 h-[2px] bg-[#3b82f6] inline-block" /> MA99</span>
-                </div>
-            )}
+                </>}
+                {showBB && <span className="flex items-center gap-1"><span className="w-3 h-[2px] bg-[#00f0ff] inline-block opacity-50" /> BOLL(20,2)</span>}
+                {showMACD && <>
+                    <span className="flex items-center gap-1"><span className="w-3 h-[2px] bg-[#00f0ff] inline-block" /> MACD</span>
+                    <span className="flex items-center gap-1"><span className="w-3 h-[2px] bg-[#ff2d8a] inline-block" /> Signal</span>
+                </>}
+                {showRSI && <span className="flex items-center gap-1"><span className="w-3 h-[2px] bg-[#f59e0b] inline-block" /> RSI(14)</span>}
+                {!showEMA && !showBB && !showMACD && !showRSI && <span>點擊右上角按鈕啟用技術指標</span>}
+            </div>
         </div>
     );
 }

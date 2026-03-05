@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import KlineChart from "../components/KlineChart";
 
 const SYMBOL_GROUPS: Record<string, string[]> = {
@@ -12,6 +12,14 @@ export default function MarketPage() {
     const [selectedSymbol, setSelectedSymbol] = useState("BTCUSDT");
     const [activeGroup, setActiveGroup] = useState("熱門");
     const [customInput, setCustomInput] = useState("");
+    const [chartHeight, setChartHeight] = useState(550);
+
+    useEffect(() => {
+        const updateHeight = () => setChartHeight(Math.max(550, window.innerHeight - 170));
+        updateHeight();
+        window.addEventListener("resize", updateHeight);
+        return () => window.removeEventListener("resize", updateHeight);
+    }, []);
 
     const handleCustomSubmit = () => {
         let sym = customInput.trim().toUpperCase();
@@ -61,7 +69,7 @@ export default function MarketPage() {
             </div>
 
             {/* 主圖 */}
-            <KlineChart symbol={selectedSymbol} timeframe="15m" height={550} />
+            <KlineChart symbol={selectedSymbol} timeframe="15m" height={chartHeight} />
         </div>
     );
 }
