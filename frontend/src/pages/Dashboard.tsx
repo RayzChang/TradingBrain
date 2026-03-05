@@ -132,9 +132,7 @@ export default function Dashboard() {
         <div className="lg:col-span-2">
           <KlineChart symbol="BTCUSDT" timeframe="15m" height={380} />
         </div>
-        <div>
-          <DecisionPipeline />
-        </div>
+        <DecisionPipeline />
       </div>
 
       {/* 累計損益 + 未實現 */}
@@ -225,10 +223,10 @@ export default function Dashboard() {
                     </td>
                     <td
                       className={`text-right font-mono font-medium ${t.unrealized_pnl != null
-                          ? t.unrealized_pnl >= 0
-                            ? "text-[var(--green)]"
-                            : "text-[var(--red)]"
-                          : ""
+                        ? t.unrealized_pnl >= 0
+                          ? "text-[var(--green)]"
+                          : "text-[var(--red)]"
+                        : ""
                         }`}
                     >
                       {t.unrealized_pnl != null
