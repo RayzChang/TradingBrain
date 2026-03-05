@@ -1,80 +1,37 @@
-import { Routes, Route, Navigate, Link, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
+import Sidebar from "./components/Sidebar";
 import Dashboard from "./pages/Dashboard";
 import Risk from "./pages/Risk";
 import Signals from "./pages/Signals";
 import Trades from "./pages/Trades";
 import Login from "./pages/Login";
-
-function Layout({ children }: { children: React.ReactNode }) {
-  const loc = useLocation();
-  const nav = [
-    { to: "/", label: "總覽" },
-    { to: "/risk", label: "風控參數" },
-    { to: "/signals", label: "信號" },
-    { to: "/trades", label: "交易" },
-  ];
-  return (
-    <div className="min-h-screen flex flex-col">
-      <header className="border-b border-[var(--border)] bg-[var(--card)] px-6 py-3 flex items-center justify-between">
-        <h1 className="text-lg font-bold text-[var(--accent)]">TradingBrain</h1>
-        <nav className="flex gap-4">
-          {nav.map(({ to, label }) => (
-            <Link
-              key={to}
-              to={to}
-              className={
-                loc.pathname === to
-                  ? "text-[var(--accent)] font-semibold"
-                  : "text-[var(--muted)] hover:text-[var(--text)]"
-              }
-            >
-              {label}
-            </Link>
-          ))}
-        </nav>
-      </header>
-      <main className="flex-1 p-6">{children}</main>
-    </div>
-  );
-}
+import MarketPage from "./pages/Market";
+import ScreenerPage from "./pages/Screener";
 
 export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
-      <Route
-        path="/"
-        element={
-          <Layout>
-            <Dashboard />
-          </Layout>
-        }
-      />
-      <Route
-        path="/risk"
-        element={
-          <Layout>
-            <Risk />
-          </Layout>
-        }
-      />
-      <Route
-        path="/signals"
-        element={
-          <Layout>
-            <Signals />
-          </Layout>
-        }
-      />
-      <Route
-        path="/trades"
-        element={
-          <Layout>
-            <Trades />
-          </Layout>
-        }
-      />
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="/*" element={<AppLayout />} />
     </Routes>
+  );
+}
+
+function AppLayout() {
+  return (
+    <div className="flex min-h-screen">
+      <Sidebar />
+      <main className="flex-1 p-6 overflow-y-auto">
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/market" element={<MarketPage />} />
+          <Route path="/screener" element={<ScreenerPage />} />
+          <Route path="/risk" element={<Risk />} />
+          <Route path="/signals" element={<Signals />} />
+          <Route path="/trades" element={<Trades />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </main>
+    </div>
   );
 }

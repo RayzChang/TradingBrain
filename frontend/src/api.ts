@@ -67,3 +67,25 @@ export const systemApi = {
       last_updated?: string;
     }>("/system/status"),
 };
+
+export const klinesApi = {
+  get: (symbol: string, timeframe: string, limit = 300) =>
+    api<{
+      symbol: string;
+      timeframe: string;
+      klines: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>;
+    }>(`/klines/${symbol}/${timeframe}?limit=${limit}`),
+  tradeMarkers: (symbol: string) =>
+    api<{
+      symbol: string;
+      markers: Array<{
+        time: string;
+        position: string;
+        color: string;
+        shape: string;
+        text: string;
+        type: string;
+        price?: number;
+      }>;
+    }>(`/klines/${symbol}/trade-markers`),
+};

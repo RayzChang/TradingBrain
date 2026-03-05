@@ -1,22 +1,401 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ═══════════════════════════════════════════════
+   TradingBrain v4 — Cyberpunk Design System
+   霓虹 × 毛玻璃 × 掃描線 × 故障效果
+   ═══════════════════════════════════════════════ */
+
+/* ── 色票系統 ── */
 :root {
-  --bg: #0d1117;
-  --card: #161b22;
-  --border: #30363d;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #58a6ff;
-  --green: #3fb950;
-  --red: #f85149;
+  /* 背景層 */
+  --bg-deep: #050510;
+  --bg-base: #0a0e1a;
+  --bg-card: rgba(15, 20, 40, 0.7);
+  --bg-card-hover: rgba(20, 28, 55, 0.8);
+
+  /* 霓虹色 */
+  --neon-cyan: #00f0ff;
+  --neon-purple: #a855f7;
+  --neon-pink: #ff2d8a;
+  --neon-blue: #3b82f6;
+
+  /* 功能色 */
+  --green: #00ff88;
+  --green-dim: rgba(0, 255, 136, 0.15);
+  --red: #ff4466;
+  --red-dim: rgba(255, 68, 102, 0.15);
+  --yellow: #ffaa00;
+  --yellow-dim: rgba(255, 170, 0, 0.15);
+
+  /* 文字 */
+  --text: #e8eaed;
+  --text-secondary: #8892a4;
+  --text-dim: #4a5568;
+
+  /* 邊框 */
+  --border: rgba(100, 120, 180, 0.15);
+  --border-glow: rgba(0, 240, 255, 0.3);
+
+  /* 漸層 */
+  --gradient-primary: linear-gradient(135deg, #a855f7, #3b82f6, #00f0ff);
+  --gradient-card: linear-gradient(135deg, rgba(168, 85, 247, 0.08), rgba(59, 130, 246, 0.05));
+  --gradient-sidebar: linear-gradient(180deg, #0a0e1a 0%, #0d1128 50%, #0a0e1a 100%);
+}
+
+/* ── 全局基礎 ── */
+* {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  background: var(--bg);
+  background: var(--bg-deep);
   color: var(--text);
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* 背景動態網格 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    linear-gradient(rgba(0, 240, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 240, 255, 0.02) 1px, transparent 1px);
+  background-size: 60px 60px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 掃描線效果 */
+body::after {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: repeating-linear-gradient(0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 240, 255, 0.008) 2px,
+      rgba(0, 240, 255, 0.008) 4px);
+  pointer-events: none;
+  z-index: 9999;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── 毛玻璃卡片 ── */
+.glass-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.glass-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--gradient-card);
+  pointer-events: none;
+}
+
+.glass-card:hover {
+  border-color: var(--border-glow);
+  box-shadow: 0 0 20px rgba(0, 240, 255, 0.05);
+}
+
+/* ── 霓虹邊框卡片 ── */
+.neon-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(16px);
+  border: 1px solid transparent;
+  border-radius: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.neon-card::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  background: var(--gradient-primary);
+  border-radius: 13px;
+  z-index: -1;
+  opacity: 0.3;
+  transition: opacity 0.3s ease;
+}
+
+.neon-card:hover::before {
+  opacity: 0.5;
+}
+
+/* ── 霓虹文字 ── */
+.neon-text {
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.neon-glow {
+  text-shadow:
+    0 0 7px rgba(0, 240, 255, 0.6),
+    0 0 30px rgba(0, 240, 255, 0.3),
+    0 0 60px rgba(168, 85, 247, 0.2);
+}
+
+/* ── Glitch 效果 ── */
+@keyframes glitch {
+
+  0%,
+  100% {
+    transform: translate(0);
+  }
+
+  20% {
+    transform: translate(-2px, 1px);
+  }
+
+  40% {
+    transform: translate(2px, -1px);
+  }
+
+  60% {
+    transform: translate(-1px, -1px);
+  }
+
+  80% {
+    transform: translate(1px, 2px);
+  }
+}
+
+@keyframes glitch-clip {
+
+  0%,
+  100% {
+    clip-path: inset(0 0 0 0);
+  }
+
+  10% {
+    clip-path: inset(20% 0 60% 0);
+  }
+
+  20% {
+    clip-path: inset(60% 0 10% 0);
+  }
+
+  30% {
+    clip-path: inset(40% 0 40% 0);
+  }
+
+  40% {
+    clip-path: inset(80% 0 5% 0);
+  }
+
+  50% {
+    clip-path: inset(10% 0 70% 0);
+  }
+}
+
+.glitch-hover:hover {
+  animation: glitch 0.3s ease infinite;
+}
+
+/* ── 呼吸燈 ── */
+@keyframes pulse-glow {
+
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+.pulse-glow {
+  animation: pulse-glow 3s ease-in-out infinite;
+}
+
+/* ── 進場動畫 ── */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-up {
+  animation: fade-up 0.5s ease-out forwards;
+}
+
+/* ── Shimmer 載入效果 ── */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.shimmer {
+  background: linear-gradient(90deg,
+      var(--bg-card) 25%,
+      rgba(0, 240, 255, 0.05) 50%,
+      var(--bg-card) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}
+
+/* ── 數字跳動 ── */
+@keyframes count-up {
+  from {
+    opacity: 0.3;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.count-up {
+  animation: count-up 0.3s ease-out;
+}
+
+/* ── 滾動條 ── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 240, 255, 0.2);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 240, 255, 0.4);
+}
+
+/* ── 狀態色 badge ── */
+.badge-long {
+  color: var(--green);
+  background: var(--green-dim);
+  padding: 2px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.badge-short {
+  color: var(--red);
+  background: var(--red-dim);
+  padding: 2px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.badge-active {
+  color: var(--neon-cyan);
+  background: rgba(0, 240, 255, 0.1);
+  padding: 2px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* ── 表格 ── */
+.cyber-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.85rem;
+}
+
+.cyber-table thead th {
+  text-align: left;
+  padding: 12px 16px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+}
+
+.cyber-table tbody td {
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(100, 120, 180, 0.06);
+  transition: background 0.15s ease;
+}
+
+.cyber-table tbody tr:hover td {
+  background: rgba(0, 240, 255, 0.03);
+}
+
+/* ── 按鈕 ── */
+.cyber-btn {
+  padding: 8px 20px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.cyber-btn:hover {
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 15px rgba(0, 240, 255, 0.15);
+}
+
+.cyber-btn-primary {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.3), rgba(0, 240, 255, 0.2));
+  border-color: rgba(168, 85, 247, 0.4);
+}
+
+.cyber-btn-primary:hover {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.5), rgba(0, 240, 255, 0.3));
+  box-shadow: 0 0 20px rgba(168, 85, 247, 0.25);
+}
+
+/* ── Mono 字體 ── */
+.font-mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
 }

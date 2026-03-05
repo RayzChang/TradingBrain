@@ -187,10 +187,13 @@ class TradingBrain:
         # LINE 啟動通知
         mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
         send_line_message(
-            f"🚀 TradingBrain v3 {mode_tag} 已啟動\n"
+            f"🧠 TradingBrain v4 {mode_tag} 已啟動\n"
             f"模式: {TRADING_MODE} | 幣種: {len(DEFAULT_WATCHLIST)}\n"
-            f"策略: 趨勢追蹤 + 突破 + 均值回歸 (市場自適應)\n"
-            f"風控: {max_risk_pct:.1f}% 風險 / {max_lev}x 槓桿 / SL={sl_atr}ATR / TP={tp_atr}ATR"
+            f"策略: 趨勢追蹤 + 突破 + 均值回歸\n"
+            f"(市場狀態自適應 · Cyberpunk UI)\n"
+            f"風控: {max_risk_pct:.1f}% 風險 / {max_lev}x 槓桿\n"
+            f"SL={sl_atr}ATR / TP={tp_atr}ATR\n"
+            f"📊 儀表板: http://localhost:8888"
         )
 
 
