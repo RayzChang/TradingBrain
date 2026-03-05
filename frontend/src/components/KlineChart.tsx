@@ -14,6 +14,7 @@ interface KlineChartProps {
     symbol?: string;
     timeframe?: string;
     height?: number;
+    onHeightChange?: (height: number) => void;
 }
 
 const TF_OPTIONS = ["1m", "5m", "15m", "1h", "4h", "1d"];
@@ -98,7 +99,7 @@ function OhlcvLegend({ data }: { data: K | null }) {
 }
 
 /* ═══ 主元件 ═══ */
-export default function KlineChart({ symbol: initSym = "BTCUSDT", timeframe: initTf = "15m", height = 420 }: KlineChartProps) {
+export default function KlineChart({ symbol: initSym = "BTCUSDT", timeframe: initTf = "15m", height = 420, onHeightChange }: KlineChartProps) {
     const mainRef = useRef<HTMLDivElement>(null);
     const macdRef = useRef<HTMLDivElement>(null);
     const rsiRef = useRef<HTMLDivElement>(null);
@@ -132,6 +133,16 @@ export default function KlineChart({ symbol: initSym = "BTCUSDT", timeframe: ini
     const rawRef = useRef<K[]>([]);
 
     useEffect(() => { setSym(initSym); }, [initSym]);
+
+    const activeSubCharts = (showMACD ? 1 : 0) + (showRSI ? 1 : 0);
+    const totalInternalHeight = height + (activeSubCharts * 100);
+
+    // Notify parent of total calculated height
+    useEffect(() => {
+        if (onHeightChange) {
+            onHeightChange(totalInternalHeight);
+        }
+    }, [totalInternalHeight, onHeightChange]);
 
     const chartOpts = (bg = "transparent") => ({
         layout: { background: { color: bg }, textColor: "#6b7280", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" },

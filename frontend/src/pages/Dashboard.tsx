@@ -38,6 +38,7 @@ export default function Dashboard() {
   const [openTrades, setOpenTrades] = useState<Trade[]>([]);
   const [totalUnrealized, setTotalUnrealized] = useState<number | null>(null);
   const [todayTrades, setTodayTrades] = useState<Trade[]>([]);
+  const [chartHeight, setChartHeight] = useState<number>(380);
   const [err, setErr] = useState("");
 
   const fetchData = useCallback(() => {
@@ -128,11 +129,18 @@ export default function Dashboard() {
       </div>
 
       {/* K 線圖 + 決策管道 */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:items-start">
         <div className="lg:col-span-2">
-          <KlineChart symbol="BTCUSDT" timeframe="15m" height={380} />
+          <KlineChart
+            symbol="BTCUSDT"
+            timeframe="15m"
+            height={380}
+            onHeightChange={setChartHeight}
+          />
         </div>
-        <DecisionPipeline />
+        <div style={{ height: chartHeight ? `${chartHeight}px` : 'auto' }} className="w-full">
+          <DecisionPipeline />
+        </div>
       </div>
 
       {/* 累計損益 + 未實現 */}
