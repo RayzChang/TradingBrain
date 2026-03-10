@@ -8,10 +8,13 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pandas as pd
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.risk.position_sizer import PositionSizer, PositionSizeResult, _parse_max_open_positions
 from core.risk.stop_loss import StopLossCalculator, StopLossResult
+from core.risk.structure_levels import compute_structure_levels
 from core.risk.daily_limits import DailyLimitsChecker, DailyLimitsResult
 from core.risk.cooldown import CooldownChecker, CooldownResult
 from core.risk.risk_manager import RiskManager, RiskCheckResult
@@ -56,6 +59,31 @@ def test_position_sizer():
     print("  [PASS]")
 
 
+def test_position_sizer_prefers_structure_stop_distance():
+    print("\n=== 測試 position sizing 優先使用結構止損距離 ===")
+    sizer = PositionSizer(db=None)
+    close_stop = sizer.compute(
+        balance=1000,
+        entry_price=100,
+        atr=2.0,
+        direction="LONG",
+        stop_loss_atr_mult=1.5,
+        stop_loss_price=99,
+    )
+    far_stop = sizer.compute(
+        balance=1000,
+        entry_price=100,
+        atr=2.0,
+        direction="LONG",
+        stop_loss_atr_mult=1.5,
+        stop_loss_price=95,
+    )
+    assert close_stop.rejected is False
+    assert far_stop.rejected is False
+    assert close_stop.size_usdt > far_stop.size_usdt
+    print("  [PASS]")
+
+
 def test_stop_loss_calculator():
     print("\n=== 測試止損止盈計算 ===")
     calc = StopLossCalculator(db=None)
@@ -68,6 +96,42 @@ def test_stop_loss_calculator():
     assert r_short.take_profit < 100
     print(f"  LONG sl={r.stop_loss} tp={r.take_profit}")
     print(f"  SHORT sl={r_short.stop_loss} tp={r_short.take_profit}")
+    print("  [PASS]")
+
+
+def test_stop_loss_calculator_mean_reversion_profile():
+    print("\n=== 測試 mean_reversion 專屬出場模板 ===")
+    calc = StopLossCalculator(db=None)
+    result = calc.compute(
+        entry_price=100,
+        atr=2,
+        direction="LONG",
+        strategy_name="mean_reversion",
+    )
+    assert result.rejected is False
+    assert result.stop_loss == 97.5
+    assert result.tp1 == 102.0
+    assert result.tp2 == 103.6
+    assert result.tp3 == 0.0
+    assert result.take_profit == result.tp2
+    print("  [PASS]")
+
+
+def test_structure_levels_long():
+    print("\n=== 測試結構型出場層級 ===")
+    df = pd.DataFrame(
+        {
+            "open": [100, 101, 102, 104, 103, 105, 107, 106, 108, 110],
+            "high": [101, 102, 103, 105, 104, 107, 108, 109, 111, 112],
+            "low": [99, 100, 101, 102, 101, 103, 105, 104, 106, 108],
+            "close": [100, 102, 103, 103, 104, 106, 106, 108, 110, 111],
+        }
+    )
+    levels = compute_structure_levels(df, entry_price=106, direction="LONG")
+    assert levels.stop_loss is not None
+    assert levels.stop_loss < 106
+    assert levels.tp1 is not None
+    assert levels.tp1 > 106
     print("  [PASS]")
 
 
@@ -145,16 +209,93 @@ def test_risk_manager_integration():
     print("  [PASS]")
 
 
+def test_risk_manager_uses_mean_reversion_profile():
+    print("\n=== 測試 RiskManager 套用 mean_reversion 模板 ===")
+    db = MagicMock()
+    db.get_risk_params.return_value = {
+        "max_risk_per_trade": 0.02,
+        "min_notional_value": 10,
+        "max_open_positions": "auto",
+        "max_leverage": 5,
+        "stop_loss_atr_mult": 1.5,
+        "take_profit_atr_mult": 2.25,
+        "min_risk_reward": 1.5,
+        "mean_reversion_stop_loss_atr_mult": 1.25,
+        "mean_reversion_tp1_atr_mult": 1.0,
+        "mean_reversion_tp2_atr_mult": 1.8,
+        "mean_reversion_min_risk_reward": 1.2,
+        "max_daily_loss": 0.05,
+        "max_drawdown": 0.15,
+        "max_consecutive_losses": 3,
+        "cool_down_after_loss_sec": 300,
+    }
+    db.get_daily_pnl.return_value = 0.0
+    db.get_recent_closed_trades.return_value = []
+
+    manager = RiskManager(db)
+    sig = TradeSignal(
+        symbol="BTCUSDT",
+        timeframe="15m",
+        signal_type="LONG",
+        strength=0.8,
+        strategy_name="mean_reversion",
+        indicators={},
+    )
+    risk_result = manager.evaluate(
+        sig,
+        current_balance=300,
+        entry_price=100,
+        atr=2.0,
+        open_trades_count=0,
+    )
+    assert risk_result.passed is True
+    assert risk_result.stop_loss == 97.5
+    assert risk_result.tp1 == 102.0
+    assert risk_result.tp2 == 103.6
+    assert risk_result.tp3 == 0.0
+    assert risk_result.take_profit == 103.6
+    print("  [PASS]")
+
+
+def test_stop_loss_calculator_uses_structure_when_available():
+    print("\n=== 測試風控優先使用結構位 ===")
+    calc = StopLossCalculator(db=None)
+    df = pd.DataFrame(
+        {
+            "open": [100, 101, 102, 103, 104, 106, 108, 109, 108, 110, 111, 112],
+            "high": [101, 102, 103, 104, 106, 108, 109, 110, 110, 112, 113, 115],
+            "low": [99, 100, 101, 102, 103, 105, 107, 108, 107.8, 109, 110, 111],
+            "close": [100, 101.5, 102.5, 103.5, 105.5, 107.5, 108.5, 108.8, 109.5, 111, 112, 114],
+        }
+    )
+    result = calc.compute(
+        entry_price=110,
+        atr=2,
+        direction="LONG",
+        strategy_name="trend_following",
+        structure_df=df,
+    )
+    assert result.rejected is False
+    assert result.stop_loss < 110
+    assert result.tp1 > 110
+    print("  [PASS]")
+
+
 def main():
     print("=" * 60)
     print("TradingBrain Phase 5 - 風險管理核心測試")
     print("=" * 60)
     test_parse_max_open_positions()
     test_position_sizer()
+    test_position_sizer_prefers_structure_stop_distance()
     test_stop_loss_calculator()
+    test_stop_loss_calculator_mean_reversion_profile()
+    test_structure_levels_long()
+    test_stop_loss_calculator_uses_structure_when_available()
     test_daily_limits_checker()
     test_cooldown_checker()
     test_risk_manager_integration()
+    test_risk_manager_uses_mean_reversion_profile()
     print("\n" + "=" * 60)
     print("ALL TESTS PASSED!")
     print("=" * 60)

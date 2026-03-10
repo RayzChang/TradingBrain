@@ -14,6 +14,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from loguru import logger
 
+from config.settings import APP_TIMEZONE_NAME
 from database.db_manager import DatabaseManager
 
 
@@ -28,7 +29,7 @@ class TaskScheduler:
     def __init__(self, db: DatabaseManager) -> None:
         self.db = db
         self.scheduler = AsyncIOScheduler(
-            timezone="UTC",
+            timezone=APP_TIMEZONE_NAME,
             job_defaults={
                 "coalesce": True,       # 錯過的執行合併為一次
                 "max_instances": 1,     # 同一任務最多一個實例
@@ -41,7 +42,8 @@ class TaskScheduler:
         self,
         task_id: str,
         func: Callable,
-        minutes: int,
+        minutes: int | None = None,
+        seconds: int | None = None,
         description: str = "",
         args: Optional[tuple] = None,
         kwargs: Optional[dict] = None,
@@ -55,11 +57,22 @@ class TaskScheduler:
             minutes: 執行間隔（分鐘）
             description: 任務描述
         """
+        if minutes is None and seconds is None:
+            raise ValueError("Either minutes or seconds must be provided for interval tasks.")
+
         wrapped = self._wrap_task(task_id, func)
+        trigger_kwargs: dict[str, int] = {}
+        schedule_label = ""
+        if seconds is not None:
+            trigger_kwargs["seconds"] = seconds
+            schedule_label = f"every {seconds}s"
+        else:
+            trigger_kwargs["minutes"] = int(minutes)
+            schedule_label = f"every {minutes}min"
 
         self.scheduler.add_job(
             wrapped,
-            trigger=IntervalTrigger(minutes=minutes),
+            trigger=IntervalTrigger(**trigger_kwargs),
             id=task_id,
             name=description or task_id,
             args=args,
@@ -69,9 +82,10 @@ class TaskScheduler:
         self._tasks[task_id] = {
             "type": "interval",
             "minutes": minutes,
+            "seconds": seconds,
             "description": description,
         }
-        logger.info(f"Scheduled: {task_id} (every {minutes}min) - {description}")
+        logger.info(f"Scheduled: {task_id} ({schedule_label}) - {description}")
 
     def add_cron_task(
         self,
@@ -186,7 +200,11 @@ class TaskScheduler:
                 "task_id": task_id,
                 "description": info.get("description", ""),
                 "type": info.get("type", ""),
-                "schedule": info.get("minutes", info.get("cron", "")),
+                "schedule": (
+                    f"{info['seconds']}s"
+                    if info.get("seconds") is not None
+                    else info.get("minutes", info.get("cron", ""))
+                ),
                 "last_run": db_status.get("last_run"),
                 "last_status": db_status.get("last_status", "never"),
                 "run_count": db_status.get("run_count", 0),

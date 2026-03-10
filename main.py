@@ -1,4 +1,4 @@
-"""
+﻿"""
 TradingBrain — 加密貨幣自動交易系統
 
 主程式入口。啟動所有子系統：
@@ -19,6 +19,8 @@ import json
 import signal
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -31,6 +33,10 @@ from config.settings import (
     API_PORT,
     TRADING_INITIAL_BALANCE,
     DEFAULT_LEVERAGE,
+    runtime_config_errors,
+    runtime_config_warnings,
+    APP_TIMEZONE,
+    APP_TIMEZONE_NAME,
 )
 from core.logger_setup import setup_logger
 from core.data.websocket_feed import BinanceWebSocketFeed
@@ -57,6 +63,19 @@ from notifications.line_notify import send_line_message
 from database.db_manager import DatabaseManager
 
 
+@dataclass
+class PendingEntry:
+    signal: TradeSignal
+    market_snapshot_json: str | None
+    setup_time: float
+    expires_at: float
+    trigger_high: float
+    trigger_low: float
+    trigger_close: float
+    atr: float
+    structure_df: pd.DataFrame | None
+
+
 class TradingBrain:
     """交易系統主控制器"""
 
@@ -77,10 +96,21 @@ class TradingBrain:
         self.last_kline_received_at: float = 0.0  # 供心跳檢查用
         self._startup_time: float = 0.0
         self._testnet_fallback_done: bool = False  # Testnet 保底開單僅觸發一次
+        self._pending_entries: dict[str, list[PendingEntry]] = {}
 
     async def startup(self) -> None:
         """系統啟動序列"""
         setup_logger()
+
+        config_errors = runtime_config_errors()
+        if config_errors:
+            for err in config_errors:
+                logger.error(f"Configuration error: {err}")
+            raise RuntimeError("Invalid runtime configuration. Fix .env before starting TradingBrain.")
+
+        for warning in runtime_config_warnings():
+            logger.warning(f"Configuration warning: {warning}")
+
         
         # 0. 啟動 Web API（儀表板後端，背景執行）- 優先啟動以便 UI 能連線
         from config.settings import API_PORT
@@ -195,7 +225,7 @@ class TradingBrain:
         # LINE 啟動通知
         mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
         send_line_message(
-            f"🧠 TradingBrain v4 {mode_tag} 已啟動\n"
+            f"🧠 TradingBrain V5 {mode_tag} 已啟動\n"
             f"模式: {TRADING_MODE} | 幣種: {len(DEFAULT_WATCHLIST)}\n"
             f"策略: 趨勢追蹤 + 突破 + 均值回歸\n"
             f"(市場狀態自適應 · {preset_label})\n"
@@ -318,7 +348,7 @@ class TradingBrain:
         if is_trading_enabled() or TRADING_MODE == "paper":
             self.scheduler.add_interval_task(
                 "position_check", self._position_check,
-                minutes=SCHEDULER_CONFIG["position_check"]["interval_min"],
+                seconds=SCHEDULER_CONFIG["position_check"]["interval_sec"],
                 description="持倉止損止盈檢查",
             )
         # 心跳（靜默：僅異常時 LINE）
@@ -379,6 +409,9 @@ class TradingBrain:
         if result.chop and result.chop.is_chop:
             cooldown_until = time.time() + result.chop.cooldown_minutes * 60
             self.veto_engine.set_chop_active(True, cooldown_until)
+
+        if tf == "1m":
+            await self._process_pending_entries(symbol)
 
         # 在 15m 收盤時做完整 MTF 分析（主進場時間框架）
         if tf == "15m":
@@ -504,71 +537,12 @@ class TradingBrain:
                 f"(通過 {len(agg_result.passed)} 筆)"
             )
 
-        # 風控評估：通過否決的信號進入風控（倉位/止損/熔斷/冷卻）
-        if not primary or primary.df_enriched is None:
-            primary = None
-        # 模擬/實盤時使用交易所餘額，否則使用設定初始餘額
-        balance = TRADING_INITIAL_BALANCE
-        if self.binance_client:
-            try:
-                balance = await self.binance_client.get_balance()
-            except Exception as e:
-                logger.warning(f"取得交易所餘額失敗，使用初始餘額: {e}")
-        open_trades = self.db.get_open_trades()
-        for sig in agg_result.passed:
-            entry_price = primary.df_enriched["close"].iloc[-1] if primary else 0
-            atr_val = primary.indicators.get("atr") if primary else None
-            if atr_val is None and primary and primary.df_enriched is not None:
-                atr_val = primary.df_enriched["atr"].iloc[-1]
-            atr = float(atr_val) if atr_val is not None else 0
-            if primary and entry_price is not None and atr:
-                risk_result = self.risk_manager.evaluate(
-                    sig, balance, float(entry_price), atr, len(open_trades)
-                )
-                if risk_result.passed:
-                    trade_id = await execute_trade(
-                        sig, risk_result, float(entry_price), self.db, sig.strategy_name
-                    )
-                    # 更新決策日誌：風控通過 + 最終動作
-                    self.db.insert_analysis_log({
-                        "symbol": sig.symbol,
-                        "timeframe": full.primary_tf,
-                        "strategy_name": sig.strategy_name,
-                        "signal_generated": 1,
-                        "signal_type": sig.signal_type,
-                        "signal_strength": sig.strength,
-                        "veto_passed": 1,
-                        "risk_passed": 1,
-                        "final_action": "EXECUTED" if trade_id else "EXCHANGE_REJECTED",
-                        "market_snapshot": market_snap_json,
-                    })
-                    if trade_id:
-                        open_trades = self.db.get_open_trades()
-                    else:
-                        err_msg = f"❌ TradingBrain 交易所退單\n{sig.symbol} {sig.signal_type} | {sig.strategy_name}\n原因: 請檢查日誌 (通常為保證金不足或槓桿過高)"
-                        send_line_message(err_msg)
-                        logger.info(
-                            f"風控通過但未下單: {sig.symbol} {sig.signal_type} "
-                            f"size={risk_result.size_usdt}U sl={risk_result.stop_loss}"
-                        )
-                else:
-                    # 更新決策日誌：風控攔截
-                    self.db.insert_analysis_log({
-                        "symbol": sig.symbol,
-                        "timeframe": full.primary_tf,
-                        "strategy_name": sig.strategy_name,
-                        "signal_generated": 1,
-                        "signal_type": sig.signal_type,
-                        "signal_strength": sig.strength,
-                        "veto_passed": 1,
-                        "risk_passed": 0,
-                        "risk_reason": risk_result.reason,
-                        "final_action": "RISK_BLOCKED",
-                        "market_snapshot": market_snap_json,
-                    })
-                    err_msg = f"⚠️ TradingBrain 風控攔截\n{sig.symbol} {sig.signal_type} | {sig.strategy_name}\n攔截原因: {risk_result.reason}"
-                    send_line_message(err_msg)
-                    logger.info(f"風控攔截: {sig.symbol} {sig.signal_type} - {risk_result.reason}")
+        if primary and primary.df_enriched is not None:
+            await self._queue_pending_entries(
+                agg_result.passed,
+                primary,
+                market_snap_json,
+            )
 
         # 保底開單（僅觸發一次）：避免長時間 0 倉，讓整條流程可被驗證/訓練
         if (
@@ -623,10 +597,233 @@ class TradingBrain:
         """排程：每 15 分鐘依大腦狀態重載策略參數"""
         self._rebuild_strategies_from_brain()
 
+    async def _queue_pending_entries(
+        self,
+        signals: list[TradeSignal],
+        primary,
+        market_snapshot_json: str | None,
+    ) -> None:
+        if not signals or primary.df_enriched is None:
+            return
+
+        current_time = time.time()
+        latest = primary.df_enriched.iloc[-1]
+        atr_val = primary.indicators.get("atr")
+        if atr_val is None and "atr" in primary.df_enriched.columns:
+            atr_val = primary.df_enriched["atr"].iloc[-1]
+        atr = float(atr_val) if atr_val is not None else 0.0
+        if atr <= 0:
+            return
+
+        pending_for_symbol = self._pending_entries.setdefault(primary.symbol, [])
+        pending_for_symbol[:] = [entry for entry in pending_for_symbol if entry.expires_at > current_time]
+
+        for sig in signals:
+            sig.indicators["_structure_df"] = primary.df_enriched.tail(200).copy()
+            pending = PendingEntry(
+                signal=sig,
+                market_snapshot_json=market_snapshot_json,
+                setup_time=current_time,
+                expires_at=current_time + 15 * 60,
+                trigger_high=float(latest.get("high", latest.get("close", 0))),
+                trigger_low=float(latest.get("low", latest.get("close", 0))),
+                trigger_close=float(latest.get("close", 0)),
+                atr=atr,
+                structure_df=primary.df_enriched.tail(200).copy(),
+            )
+            pending_for_symbol.append(pending)
+            self.db.insert_analysis_log({
+                "symbol": sig.symbol,
+                "timeframe": "1m_trigger",
+                "strategy_name": sig.strategy_name,
+                "signal_generated": 1,
+                "signal_type": sig.signal_type,
+                "signal_strength": sig.strength,
+                "veto_passed": 1,
+                "final_action": "PENDING_TRIGGER",
+                "market_snapshot": market_snapshot_json,
+            })
+            logger.info(
+                f"候選訊號已建立: {sig.symbol} {sig.signal_type} {sig.strategy_name} "
+                f"(等待 1m 觸發，15 分鐘內有效)"
+            )
+
+    async def _process_pending_entries(self, symbol: str) -> None:
+        pending_list = self._pending_entries.get(symbol)
+        if not pending_list or self.analysis_engine is None or self.ws_feed is None:
+            return
+
+        now = time.time()
+        active_entries = [entry for entry in pending_list if entry.expires_at > now]
+        if not active_entries:
+            self._pending_entries.pop(symbol, None)
+            return
+
+        open_trades = self.db.get_open_trades()
+        if any(trade["symbol"] == symbol for trade in open_trades):
+            self._pending_entries.pop(symbol, None)
+            return
+
+        one_min_candles = self.ws_feed.cache.get(symbol.lower(), "1m")
+        if len(one_min_candles) < 30:
+            self._pending_entries[symbol] = active_entries
+            return
+
+        one_min_df = pd.DataFrame(one_min_candles)
+        for col in ("open", "high", "low", "close", "volume"):
+            if col in one_min_df.columns:
+                one_min_df[col] = pd.to_numeric(one_min_df[col], errors="coerce")
+        one_min_result = self.analysis_engine.analyze_single(symbol, "1m", one_min_df)
+
+        remaining: list[PendingEntry] = []
+        for pending in active_entries:
+            if not self._entry_triggered(pending, one_min_result):
+                remaining.append(pending)
+                continue
+            trade_id = await self._run_risk_and_execute(
+                pending.signal,
+                float(one_min_result.df_enriched["close"].iloc[-1]),
+                pending.atr,
+                pending.market_snapshot_json,
+            )
+            if trade_id:
+                logger.info(
+                    f"1m 觸發成功: {pending.signal.symbol} {pending.signal.signal_type} "
+                    f"{pending.signal.strategy_name}"
+                )
+            break
+
+        if remaining:
+            self._pending_entries[symbol] = remaining
+        else:
+            self._pending_entries.pop(symbol, None)
+
+    def _entry_triggered(self, pending: PendingEntry, one_min_result) -> bool:
+        if one_min_result.df_enriched is None or one_min_result.df_enriched.empty:
+            return False
+
+        curr = one_min_result.df_enriched.iloc[-1]
+        close = float(curr.get("close", 0))
+        open_price = float(curr.get("open", close))
+        high = float(curr.get("high", close))
+        low = float(curr.get("low", close))
+        volume = float(curr.get("volume", 0))
+        avg_volume = float(one_min_result.df_enriched["volume"].iloc[-20:].mean())
+        ema9 = curr.get("ema_9")
+        rsi = curr.get("rsi")
+
+        direction = pending.signal.signal_type
+        strategy = pending.signal.strategy_name
+
+        if strategy == "trend_following":
+            if direction == "LONG":
+                return (
+                    close > pending.trigger_high
+                    and high > pending.trigger_high
+                    and close > open_price
+                    and ema9 is not None
+                    and close > float(ema9)
+                    and rsi is not None
+                    and float(rsi) >= 52
+                )
+            return (
+                close < pending.trigger_low
+                and low < pending.trigger_low
+                and close < open_price
+                and ema9 is not None
+                and close < float(ema9)
+            )
+
+        if strategy == "breakout":
+            volume_ok = avg_volume > 0 and volume > avg_volume * 1.2
+            if direction == "LONG":
+                return close > pending.trigger_high and close > open_price and volume_ok
+            return close < pending.trigger_low and close < open_price and volume_ok
+
+        if strategy == "mean_reversion":
+            if direction == "LONG":
+                return (
+                    close > pending.trigger_close
+                    and close > open_price
+                    and ema9 is not None
+                    and close > float(ema9)
+                )
+            return (
+                close < pending.trigger_close
+                and close < open_price
+                and ema9 is not None
+                and close < float(ema9)
+            )
+
+        return False
+
+    async def _run_risk_and_execute(
+        self,
+        sig: TradeSignal,
+        entry_price: float,
+        atr: float,
+        market_snapshot_json: str | None,
+    ) -> int | None:
+        balance = TRADING_INITIAL_BALANCE
+        if self.binance_client:
+            try:
+                balance = await self.binance_client.get_balance()
+            except Exception as e:
+                logger.warning(f"取得交易所餘額失敗，使用初始餘額: {e}")
+        open_trades = self.db.get_open_trades()
+        if entry_price <= 0 or atr <= 0:
+            return None
+
+        risk_result = self.risk_manager.evaluate(
+            sig, balance, entry_price, atr, len(open_trades)
+        )
+        if risk_result.passed:
+            trade_id = await execute_trade(
+                sig, risk_result, entry_price, self.db, sig.strategy_name
+            )
+            self.db.insert_analysis_log({
+                "symbol": sig.symbol,
+                "timeframe": "1m_trigger",
+                "strategy_name": sig.strategy_name,
+                "signal_generated": 1,
+                "signal_type": sig.signal_type,
+                "signal_strength": sig.strength,
+                "veto_passed": 1,
+                "risk_passed": 1,
+                "final_action": "EXECUTED" if trade_id else "EXCHANGE_REJECTED",
+                "market_snapshot": market_snapshot_json,
+            })
+            if not trade_id:
+                send_line_message(
+                    f"❌ TradingBrain 交易所退單\n{sig.symbol} {sig.signal_type} | {sig.strategy_name}\n"
+                    "原因: 請檢查日誌 (通常為保證金不足或槓桿過高)"
+                )
+            return trade_id
+
+        self.db.insert_analysis_log({
+            "symbol": sig.symbol,
+            "timeframe": "1m_trigger",
+            "strategy_name": sig.strategy_name,
+            "signal_generated": 1,
+            "signal_type": sig.signal_type,
+            "signal_strength": sig.strength,
+            "veto_passed": 1,
+            "risk_passed": 0,
+            "risk_reason": risk_result.reason,
+            "final_action": "RISK_BLOCKED",
+            "market_snapshot": market_snapshot_json,
+        })
+        send_line_message(
+            f"⚠️ TradingBrain 風控攔截\n{sig.symbol} {sig.signal_type} | {sig.strategy_name}\n"
+            f"攔截原因: {risk_result.reason}"
+        )
+        logger.info(f"風控攔截: {sig.symbol} {sig.signal_type} - {risk_result.reason}")
+        return None
+
     async def _monitor_report(self) -> None:
         """每 N 分鐘發一則監控快報到 LINE"""
-        trades_today = self.db.get_trades_today()
-        daily_pnl = self.db.get_daily_pnl()
+        trades_today = self.db.get_trades_today(tz=APP_TIMEZONE)
+        daily_pnl = self.db.get_daily_pnl(tz=APP_TIMEZONE)
         open_trades = self.db.get_open_trades()
         mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
         balance_str = ""
@@ -638,24 +835,26 @@ class TradingBrain:
                 pass
         msg = (
             f"📊 {mode_tag} 監控快報\n"
+            f"時區: {APP_TIMEZONE_NAME}\n"
             f"今日損益: {daily_pnl:+.2f} U | 筆數: {len(trades_today)} | 未平倉: {len(open_trades)}"
             f"{balance_str}\n"
-            f"策略: v3 (趨勢+突破+MTF) | 日目標: 3-10%"
+            f"策略: V5 (趨勢 + 突破 + 均值回歸) | 日目標: 5-10%"
         )
         send_line_message(msg)
         logger.debug("監控快報已發送")
 
     async def _daily_report(self) -> None:
         """生成每日績效報告並透過 LINE 發送"""
-        trades_today = self.db.get_trades_today()
-        daily_pnl = self.db.get_daily_pnl()
+        report_date = (datetime.now(APP_TIMEZONE).date() - pd.Timedelta(days=1)).isoformat()
+        trades_today = self.db.get_trades_today(tz=APP_TIMEZONE, day_offset=-1)
+        daily_pnl = self.db.get_daily_pnl(tz=APP_TIMEZONE, day_offset=-1)
         open_trades = self.db.get_open_trades()
 
         report = (
             f"📊 TradingBrain 每日報告\n"
-            f"日期: {__import__('datetime').datetime.utcnow().strftime('%Y-%m-%d')}\n"
-            f"今日交易: {len(trades_today)} 筆\n"
-            f"今日損益: {daily_pnl:+.2f} USDT\n"
+            f"日期: {report_date} ({APP_TIMEZONE_NAME})\n"
+            f"昨日交易: {len(trades_today)} 筆\n"
+            f"昨日損益: {daily_pnl:+.2f} USDT\n"
             f"未平倉位: {len(open_trades)} 個\n"
             f"模式: {TRADING_MODE}"
         )
@@ -686,7 +885,9 @@ class TradingBrain:
         prices: dict[str, float] = {}
         for sym in symbols:
             # 優先從 WebSocket 快取取最新價
-            latest = self.ws_feed.cache.get_latest(sym.lower(), "15m") if self.ws_feed else None
+            latest = self.ws_feed.cache.get_latest(sym.lower(), "1m") if self.ws_feed else None
+            if not latest and self.ws_feed:
+                latest = self.ws_feed.cache.get_latest(sym.lower(), "15m")
             if latest and "close" in latest:
                 prices[sym] = float(latest["close"])
             else:
@@ -785,3 +986,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

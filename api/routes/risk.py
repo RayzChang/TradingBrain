@@ -51,10 +51,14 @@ def load_preset(
     body: dict = Body(...),
     db: DatabaseManager = Depends(get_db),
 ):
-    """載入預設方案。body: { "preset": "conservative" | "moderate" | "aggressive" }"""
+    """載入預設方案"""
     preset = body.get("preset")
-    if preset not in ("conservative", "moderate", "aggressive"):
-        raise HTTPException(status_code=400, detail="preset must be conservative, moderate, or aggressive")
+    valid_presets = ("conservative", "moderate", "passive_income", "aggressive", "training")
+    if preset not in valid_presets:
+        raise HTTPException(
+            status_code=400,
+            detail=f"preset must be one of: {', '.join(valid_presets)}",
+        )
     p = Path(__file__).resolve().parent.parent.parent / "config" / "risk_defaults.json"
     if not p.exists():
         raise HTTPException(status_code=404, detail="risk_defaults.json not found")

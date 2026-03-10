@@ -336,6 +336,31 @@ class BinanceFuturesClient:
             logger.warning(f"place_take_profit failed: {e}")
             return None
 
+    async def cancel_all_orders(self, symbol: str) -> bool:
+        """取消指定交易對所有掛單（用於更新止損/止盈前清除舊單）"""
+        try:
+            await self._request(
+                "DELETE", "/fapi/v1/allOpenOrders",
+                params={"symbol": symbol}, weight=1, is_order=True,
+            )
+            logger.info(f"All open orders cancelled: {symbol}")
+            return True
+        except Exception as e:
+            logger.warning(f"cancel_all_orders failed for {symbol}: {e}")
+            return False
+
+    async def get_open_orders(self, symbol: str) -> list[dict]:
+        """取得指定交易對所有掛單"""
+        try:
+            data = await self._request(
+                "GET", "/fapi/v1/openOrders",
+                params={"symbol": symbol}, weight=1,
+            )
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            logger.warning(f"get_open_orders failed for {symbol}: {e}")
+            return []
+
     async def close_position_market(self, symbol: str, side: str, quantity: float) -> Optional[int]:
         """市價平倉（reduceOnly）。side 為平倉方向：多倉平倉用 SELL，空倉平倉用 BUY。"""
         try:

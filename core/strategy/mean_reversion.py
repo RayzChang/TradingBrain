@@ -1,43 +1,33 @@
-"""
-均值回歸策略 (Mean Reversion) v2
-
-邏輯:
-- 做多: 價格觸及或跌破布林下軌，且 RSI 超賣 (< 30)
-- 做空: 價格觸及或突破布林上軌，且 RSI 超買 (> 70)
-- 可選: 背離輔助（有看漲背離時做多信號加分）
-
-v2 改版：
-  - 整合 K 線型態確認（錘子線、吞噬等加分）
-  - 整合斐波那契支撐/阻力位確認
-  - 增加最低信心門檻（避免弱信號通過）
-"""
+"""Mean reversion strategy with stricter reversal confirmation."""
 
 import pandas as pd
 from loguru import logger
 
-from core.analysis.engine import AnalysisResult
 from core.analysis.candlestick import PatternDirection
-from core.strategy.base import BaseStrategy, TradeSignal, MarketRegime
+from core.analysis.engine import AnalysisResult
+from core.strategy.base import BaseStrategy, MarketRegime, TradeSignal
 
 
 class MeanReversionStrategy(BaseStrategy):
-    """
-    布林帶 + RSI 超買超賣 + K 線型態 + 斐波那契。
-    只在震盪狀態 (ADX < 20) 下出信號，避免逆勢操作。
-    """
+    """Fade stretched moves only when ranging conditions show a real reversal setup."""
+
     allowed_regimes = [MarketRegime.RANGING]
 
     def __init__(
         self,
         rsi_oversold: float = 30.0,
         rsi_overbought: float = 70.0,
-        bb_touch_threshold: float = 0.02,  # 價格與軌道距離在 2% 內視為觸及
+        bb_touch_threshold: float = 0.02,
         skip_on_chop: bool = True,
+        short_rsi_floor: float = 74.0,
+        long_rsi_ceiling: float = 26.0,
     ) -> None:
         self.rsi_oversold = rsi_oversold
         self.rsi_overbought = rsi_overbought
         self.bb_touch_threshold = bb_touch_threshold
         self.skip_on_chop = skip_on_chop
+        self.short_rsi_floor = short_rsi_floor
+        self.long_rsi_ceiling = long_rsi_ceiling
 
     @property
     def name(self) -> str:
@@ -51,7 +41,7 @@ class MeanReversionStrategy(BaseStrategy):
     ) -> list[TradeSignal]:
         signals: list[TradeSignal] = []
 
-        if result.df_enriched is None or len(result.df_enriched) < 1:
+        if result.df_enriched is None or len(result.df_enriched) < 2:
             return signals
 
         if self.skip_on_chop and result.chop and result.chop.is_chop:
@@ -59,8 +49,7 @@ class MeanReversionStrategy(BaseStrategy):
 
         ind = result.indicators
         rsi = ind.get("rsi")
-        bb_pct = ind.get("bb_pct")  # 0 = 下軌, 0.5 = 中軌, 1 = 上軌
-
+        bb_pct = ind.get("bb_pct")
         if rsi is None:
             return signals
 
@@ -69,135 +58,136 @@ class MeanReversionStrategy(BaseStrategy):
         except (TypeError, ValueError):
             return signals
 
+        prev = result.df_enriched.iloc[-2]
         curr = result.df_enriched.iloc[-1]
         close = curr.get("close")
+        open_price = curr.get("open")
         bb_lower = curr.get("bb_lower")
         bb_upper = curr.get("bb_upper")
+        ema21 = curr.get("ema_21")
+        prev_close = prev.get("close")
 
-        if close is None or close <= 0:
+        if close is None or close <= 0 or open_price is None or prev_close is None:
             return signals
 
-        # --- 預計算確認因子 ---
         candle_bonus = self._candle_pattern_bonus(result)
         fib_info = self._fibonacci_bonus(result, float(close))
+        has_bull_div = any(
+            divergence.type.value in ("regular_bullish", "hidden_bullish")
+            for divergence in result.divergences
+        )
+        has_bear_div = any(
+            divergence.type.value in ("regular_bearish", "hidden_bearish")
+            for divergence in result.divergences
+        )
 
-        # 做多：價格接近下軌 + RSI 超賣
         if bb_lower is not None and not pd.isna(bb_lower):
             dist_lower = (close - float(bb_lower)) / close
-            if dist_lower <= self.bb_touch_threshold and rsi_f < self.rsi_oversold:
-                strength = 0.5 + (self.rsi_oversold - rsi_f) / 50.0
+            bullish_reversal = bool(
+                close > open_price
+                and close >= prev_close
+                and (ema21 is None or pd.isna(ema21) or close >= ema21)
+            )
+            if dist_lower <= self.bb_touch_threshold and rsi_f <= self.long_rsi_ceiling:
+                strength = 0.5 + (self.rsi_oversold - rsi_f) / 40.0
                 strength = min(max(strength, 0.0), 1.0)
 
-                # 背離加分
-                has_bull_div = any(d.type.value == "regular_bullish" for d in result.divergences)
                 if has_bull_div:
                     strength = min(strength + 0.15, 1.0)
-
-                # K 線型態加分（如錘子線、晨星、看漲吞噬）
                 if candle_bonus.get("bullish", 0) > 0:
                     strength = min(strength + 0.1, 1.0)
-
-                # 斐波那契支撐加分
                 if fib_info.get("near_support", False):
                     strength = min(strength + 0.1, 1.0)
-
-                # 看跌型態扣分
                 if candle_bonus.get("bearish", 0) > 0:
                     strength = max(strength - 0.1, 0.0)
 
-                reason_parts = ["觸及布林下軌且 RSI 超賣"]
-                if has_bull_div:
-                    reason_parts.append("看漲背離")
-                if candle_bonus.get("bullish", 0) > 0:
-                    reason_parts.append("看漲型態確認")
-                if fib_info.get("near_support", False):
-                    reason_parts.append("斐波那契支撐位")
+                if bullish_reversal and (has_bull_div or candle_bonus.get("bullish", 0) > 0):
+                    signals.append(
+                        TradeSignal(
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            signal_type="LONG",
+                            strength=round(max(strength, 0.3), 2),
+                            strategy_name=self.name,
+                            indicators={
+                                "rsi": round(rsi_f, 2),
+                                "bb_pct": round(float(bb_pct), 4) if bb_pct is not None else None,
+                                "close": round(float(close), 4),
+                                "bb_lower": round(float(bb_lower), 4),
+                                "divergence_bullish": has_bull_div,
+                                "candle_bullish": candle_bonus.get("bullish", 0),
+                                "fib_support": fib_info.get("near_support", False),
+                                "bullish_reversal": bullish_reversal,
+                            },
+                            reason="Bollinger lower touch with RSI oversold and bullish reversal",
+                        )
+                    )
+                    logger.debug(
+                        f"{self.name} LONG signal: {symbol} {timeframe} "
+                        f"RSI={rsi_f:.1f} strength={strength:.2f}"
+                    )
 
-                if strength >= 0.3:  # 最低門檻
-                    signals.append(TradeSignal(
-                        symbol=symbol,
-                        timeframe=timeframe,
-                        signal_type="LONG",
-                        strength=round(strength, 2),
-                        strategy_name=self.name,
-                        indicators={
-                            "rsi": round(rsi_f, 2),
-                            "bb_pct": round(float(bb_pct), 4) if bb_pct is not None else None,
-                            "close": round(float(close), 4),
-                            "bb_lower": round(float(bb_lower), 4),
-                            "divergence_bullish": has_bull_div,
-                            "candle_bullish": candle_bonus.get("bullish", 0),
-                            "fib_support": fib_info.get("near_support", False),
-                        },
-                        reason="（".join(reason_parts[:1]) + ("（" + "、".join(reason_parts[1:]) + "）" if len(reason_parts) > 1 else ""),
-                    ))
-                    logger.debug(f"{self.name} LONG signal: {symbol} {timeframe} RSI={rsi_f:.1f} strength={strength:.2f}")
-
-        # 做空：價格接近上軌 + RSI 超買
         if bb_upper is not None and not pd.isna(bb_upper):
             dist_upper = (float(bb_upper) - close) / close
-            if dist_upper <= self.bb_touch_threshold and rsi_f > self.rsi_overbought:
-                strength = 0.5 + (rsi_f - self.rsi_overbought) / 50.0
+            bearish_reversal = bool(
+                close < open_price
+                and close <= prev_close
+                and (ema21 is None or pd.isna(ema21) or close <= ema21)
+            )
+            if dist_upper <= self.bb_touch_threshold and rsi_f >= self.short_rsi_floor:
+                strength = 0.5 + (rsi_f - self.rsi_overbought) / 40.0
                 strength = min(max(strength, 0.0), 1.0)
 
-                has_bear_div = any(d.type.value == "regular_bearish" for d in result.divergences)
                 if has_bear_div:
                     strength = min(strength + 0.15, 1.0)
-
                 if candle_bonus.get("bearish", 0) > 0:
                     strength = min(strength + 0.1, 1.0)
-
                 if fib_info.get("near_resistance", False):
                     strength = min(strength + 0.1, 1.0)
-
                 if candle_bonus.get("bullish", 0) > 0:
                     strength = max(strength - 0.1, 0.0)
 
-                reason_parts = ["觸及布林上軌且 RSI 超買"]
-                if has_bear_div:
-                    reason_parts.append("看跌背離")
-                if candle_bonus.get("bearish", 0) > 0:
-                    reason_parts.append("看跌型態確認")
-                if fib_info.get("near_resistance", False):
-                    reason_parts.append("斐波那契阻力位")
-
-                if strength >= 0.3:
-                    signals.append(TradeSignal(
-                        symbol=symbol,
-                        timeframe=timeframe,
-                        signal_type="SHORT",
-                        strength=round(strength, 2),
-                        strategy_name=self.name,
-                        indicators={
-                            "rsi": round(rsi_f, 2),
-                            "bb_pct": round(float(bb_pct), 4) if bb_pct is not None else None,
-                            "close": round(float(close), 4),
-                            "bb_upper": round(float(bb_upper), 4),
-                            "divergence_bearish": has_bear_div,
-                            "candle_bearish": candle_bonus.get("bearish", 0),
-                            "fib_resistance": fib_info.get("near_resistance", False),
-                        },
-                        reason="（".join(reason_parts[:1]) + ("（" + "、".join(reason_parts[1:]) + "）" if len(reason_parts) > 1 else ""),
-                    ))
-                    logger.debug(f"{self.name} SHORT signal: {symbol} {timeframe} RSI={rsi_f:.1f} strength={strength:.2f}")
+                if bearish_reversal and (has_bear_div or candle_bonus.get("bearish", 0) > 0):
+                    signals.append(
+                        TradeSignal(
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            signal_type="SHORT",
+                            strength=round(max(strength, 0.3), 2),
+                            strategy_name=self.name,
+                            indicators={
+                                "rsi": round(rsi_f, 2),
+                                "bb_pct": round(float(bb_pct), 4) if bb_pct is not None else None,
+                                "close": round(float(close), 4),
+                                "bb_upper": round(float(bb_upper), 4),
+                                "divergence_bearish": has_bear_div,
+                                "candle_bearish": candle_bonus.get("bearish", 0),
+                                "fib_resistance": fib_info.get("near_resistance", False),
+                                "bearish_reversal": bearish_reversal,
+                            },
+                            reason="Bollinger upper touch with RSI overbought and bearish reversal",
+                        )
+                    )
+                    logger.debug(
+                        f"{self.name} SHORT signal: {symbol} {timeframe} "
+                        f"RSI={rsi_f:.1f} strength={strength:.2f}"
+                    )
 
         return signals
 
     @staticmethod
     def _candle_pattern_bonus(result: AnalysisResult) -> dict:
-        """計算 K 線型態對信號的加分"""
         bullish_count = 0
         bearish_count = 0
-        for p in result.candle_patterns:
-            if p.direction == PatternDirection.BULLISH:
+        for pattern in result.candle_patterns:
+            if pattern.direction == PatternDirection.BULLISH:
                 bullish_count += 1
-            elif p.direction == PatternDirection.BEARISH:
+            elif pattern.direction == PatternDirection.BEARISH:
                 bearish_count += 1
         return {"bullish": bullish_count, "bearish": bearish_count}
 
     @staticmethod
     def _fibonacci_bonus(result: AnalysisResult, current_price: float) -> dict:
-        """計算斐波那契對信號的加分"""
         fib = result.fibonacci
         if not fib or not fib.get("available"):
             return {"near_support": False, "near_resistance": False}
@@ -210,14 +200,12 @@ class MeanReversionStrategy(BaseStrategy):
 
         if support and current_price > 0:
             support_price = support.get("price", 0)
-            dist = abs(current_price - support_price) / current_price
-            if dist < 0.01:
+            if abs(current_price - support_price) / current_price < 0.01:
                 near_support = True
 
         if resistance and current_price > 0:
             resistance_price = resistance.get("price", 0)
-            dist = abs(resistance_price - current_price) / current_price
-            if dist < 0.01:
+            if abs(resistance_price - current_price) / current_price < 0.01:
                 near_resistance = True
 
         return {"near_support": near_support, "near_resistance": near_resistance}

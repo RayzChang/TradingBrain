@@ -1,0 +1,84 @@
+================================================================================
+  TradingBrain current-profile 30-Day Backtest
+  Uses strategy-specific exits, including mean_reversion dedicated profile
+================================================================================
+  Period: 30 days | Balance: 5000.0 U
+  Symbols: 10 | Risk/trade: 3.0%
+  Trend/Breakout SL: 1.5 ATR
+  Mean reversion: SL=1.25 ATR | TP1=1.0 ATR (close 75%) | TP2=1.8 ATR | no TP3 / no trailing
+================================================================================
+
+Fetching 30 days of data...
+  OK BTCUSDT 15m: 3360
+  OK BTCUSDT 1h: 1080
+  OK BTCUSDT 4h: 420
+  OK ETHUSDT 15m: 3360
+  OK ETHUSDT 1h: 1080
+  OK ETHUSDT 4h: 420
+  OK SOLUSDT 15m: 3360
+  OK SOLUSDT 1h: 1080
+  OK SOLUSDT 4h: 420
+  OK BNBUSDT 15m: 3360
+  OK BNBUSDT 1h: 1080
+  OK BNBUSDT 4h: 420
+  OK XRPUSDT 15m: 3360
+  OK XRPUSDT 1h: 1080
+  OK XRPUSDT 4h: 420
+  OK ADAUSDT 15m: 3360
+  OK ADAUSDT 1h: 1080
+  OK ADAUSDT 4h: 420
+  OK DOGEUSDT 15m: 3360
+  OK DOGEUSDT 1h: 1080
+  OK DOGEUSDT 4h: 420
+  OK AVAXUSDT 15m: 3360
+  OK AVAXUSDT 1h: 1080
+  OK AVAXUSDT 4h: 420
+  OK DOTUSDT 15m: 3360
+  OK DOTUSDT 1h: 1080
+  OK DOTUSDT 4h: 420
+  OK LINKUSDT 15m: 3360
+  OK LINKUSDT 1h: 1080
+  OK LINKUSDT 4h: 420
+
+Preparing indicators once per symbol/timeframe...
+
+Running simulation...
+
+================================================================================
+  30-DAY BACKTEST RESULTS (current profile)
+================================================================================
+  Initial: 5000 U -> Final: 5178.66 U
+  Total PnL: +178.66 U | ROI: +3.57%
+  Daily avg ROI: +0.12%
+  Trades: 202 | Wins: 105 | Losses: 97
+  Win Rate: 52.0%
+  Profit Factor: 1.01
+  Avg Win: +121.22
+  Avg Loss: -129.37
+
+  Exit Reason               Count          PnL
+  ----------------------------------------------
+  STOP_LOSS                    97    -12549.20
+  TRAILING_SL_AFTER_TP1        69     +5595.90
+  TRAILING_SL_AFTER_TP2        36     +7131.95
+
+  Max Drawdown: 35.5%
+
+  Strategy                   N      WR          PnL
+  ------------------------------------------------
+  breakout                 112   47.3%     -1670.70
+  trend_following           90   57.8%     +1849.36
+
+  Direction        N      WR          PnL
+  --------------------------------------
+  LONG            45   42.2%     -1274.18
+  SHORT          157   54.8%     +1452.83
+
+  Strategy / Dir             N      WR          PnL
+  ------------------------------------------------
+  breakout / LONG           34   52.9%       +11.35
+  breakout / SHORT          78   44.9%     -1682.05
+  trend_following / LONG    11    9.1%     -1285.53
+  trend_following / SHORT    79   64.6%     +3134.89
+
+  Runtime: 792.8s

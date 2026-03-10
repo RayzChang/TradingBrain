@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🧠 TradingBrain v4
+# 🧠 TradingBrain V5
 
 ### _Cyberpunk Edition_
 
