@@ -124,6 +124,41 @@ def test_signal_aggregator():
     print("  [PASS]")
 
 
+def test_signal_aggregator_blocks_correlated_same_direction():
+    """BTC / ETH 同向曝險會被相關性保護擋掉。"""
+    print("\n=== 測試 correlated pairs protection ===")
+    mock_veto = MagicMock()
+    mock_veto.evaluate.return_value = VetoResult(passed=True)
+
+    strategy = MagicMock()
+    strategy.evaluate_full.return_value = [
+        TradeSignal(
+            symbol="ETHUSDT",
+            timeframe="15m",
+            signal_type="LONG",
+            strength=0.9,
+            strategy_name="breakout_retest",
+            indicators={},
+        )
+    ]
+    db = MagicMock()
+    db.get_open_trades.return_value = [{"symbol": "BTCUSDT", "side": "LONG"}]
+
+    aggregator = SignalAggregator(strategies=[strategy], veto_engine=mock_veto, db=db)
+    full = MagicMock()
+    full.symbol = "ETHUSDT"
+    full.primary_tf = "15m"
+
+    result = aggregator.evaluate(full, save_to_db=False)
+
+    assert result.passed == []
+    assert len(result.vetoed) == 1
+    sig, reason = result.vetoed[0]
+    assert sig.symbol == "ETHUSDT"
+    assert "BTCUSDT" in reason
+    print("  [PASS]")
+
+
 def test_coin_screener():
     """幣種篩選器 — 打分與排序"""
     print("\n=== 測試幣種篩選器 ===")

@@ -18,6 +18,7 @@ from config.settings import (
     BINANCE_API_KEY,
     BINANCE_API_SECRET,
     BINANCE_REST_URL,
+    BINANCE_TESTNET,
 )
 from core.rate_limiter import RateLimiter
 
@@ -58,6 +59,9 @@ class BinanceFuturesClient:
         self._symbol_info_cache: dict[str, Any] = {}
         self._time_offset: int = 0  # 本地與伺服器的時間差 (ms)
         self._time_synced: bool = False
+        self._time_sync_monotonic: float = 0.0
+        self._time_sync_ttl_seconds: int = 30
+        self._timestamp_safety_margin_ms: int = 250
 
     async def _get_client(self) -> httpx.AsyncClient:
         """取得共用 httpx 連線池（懶初始化）"""
@@ -65,9 +69,13 @@ class BinanceFuturesClient:
             self._client = httpx.AsyncClient(timeout=15.0)
         return self._client
 
-    async def _sync_time(self) -> None:
-        """同步本地時鐘與幣安伺服器，計算偏移量（只需一次）"""
-        if self._time_synced:
+    async def _sync_time(self, force: bool = False) -> None:
+        """同步本地時鐘與幣安伺服器，計算偏移量。"""
+        if (
+            not force
+            and self._time_synced
+            and (time.monotonic() - self._time_sync_monotonic) < self._time_sync_ttl_seconds
+        ):
             return
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -78,11 +86,28 @@ class BinanceFuturesClient:
                     server_time = resp.json().get("serverTime", 0)
                     # 用請求中間點估算本地時間
                     local_mid = (local_before + local_after) // 2
-                    self._time_offset = server_time - local_mid
+                    self._time_offset = (
+                        server_time - local_mid - self._timestamp_safety_margin_ms
+                    )
+                    self._time_sync_monotonic = time.monotonic()
                     logger.info(f"伺服器時間同步完成：偏移 {self._time_offset}ms")
                     self._time_synced = True
         except Exception as e:
             logger.warning(f"伺服器時間同步失敗: {e}，使用本地時間")
+
+    @staticmethod
+    def _is_timestamp_error(resp: httpx.Response) -> bool:
+        """Binance 是否因本機時鐘偏移而拒絕這次請求。"""
+        if resp.status_code != 400:
+            return False
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = {}
+        if payload.get("code") == -1021:
+            return True
+        text = resp.text or ""
+        return "-1021" in text or "ahead of the server's time" in text
 
     def _sign(self, params: dict[str, Any]) -> str:
         """加入 timestamp、recvWindow 並計算 signature，回傳完整 query_string"""
@@ -106,31 +131,47 @@ class BinanceFuturesClient:
         weight: int = 1,
         is_order: bool = False,
     ) -> dict[str, Any]:
-        """發送簽名請求（GET 或 POST），含完整錯誤日誌"""
-        # 確保時間已同步
-        await self._sync_time()
+        """發送簽名請求，遇到時鐘漂移會自動重同步並重試一次。"""
         if not self.api_key or not self.api_secret:
             raise ValueError("BINANCE_API_KEY / BINANCE_API_SECRET 未設定")
-        await self.limiter.acquire(weight=weight, is_order=is_order)
         url = f"{self.base_url}{path}"
         params = params or {}
-        query_string = self._sign(params)
-        headers = {"X-MBX-APIKEY": self.api_key}
+        method_upper = method.upper()
+        if method_upper not in {"GET", "POST", "DELETE"}:
+            raise ValueError(f"Unsupported HTTP method: {method}")
 
-        # 直接用 query string 拼接 URL，確保簽名順序與發送順序一致
-        full_url = f"{url}?{query_string}"
-        client = await self._get_client()
-        if method == "GET":
-            resp = await client.get(full_url, headers=headers)
-        else:
-            resp = await client.post(full_url, headers=headers)
-        self.limiter.update_from_headers(dict(resp.headers))
-        if resp.status_code != 200:
+        for attempt in range(2):
+            await self._sync_time(force=attempt > 0)
+            await self.limiter.acquire(weight=weight, is_order=is_order)
+            query_string = self._sign(params)
+            headers = {"X-MBX-APIKEY": self.api_key}
+            full_url = f"{url}?{query_string}"
+            client = await self._get_client()
+
+            if method_upper == "GET":
+                resp = await client.get(full_url, headers=headers)
+            elif method_upper == "POST":
+                resp = await client.post(full_url, headers=headers)
+            else:
+                resp = await client.delete(full_url, headers=headers)
+
+            self.limiter.update_from_headers(dict(resp.headers))
+            if resp.status_code == 200:
+                return resp.json()
+
+            if self._is_timestamp_error(resp) and attempt == 0:
+                logger.warning(
+                    f"Binance timestamp drift detected for {method_upper} {path}; resyncing and retrying once."
+                )
+                self._time_synced = False
+                continue
+
             logger.error(
                 f"Binance API error: {method} {path} -> {resp.status_code} | {resp.text}"
             )
             resp.raise_for_status()
-        return resp.json()
+
+        raise RuntimeError(f"Unreachable request flow for {method_upper} {path}")
 
     async def _get_exchange_info_symbol(self, symbol: str) -> Optional[dict]:
         """取得單一交易對的 exchangeInfo（帶快取）"""
@@ -242,6 +283,16 @@ class BinanceFuturesClient:
         info = await self._get_exchange_info_symbol(symbol)
         step = self._quantity_precision_from_filters(info)
         return _round_quantity(quantity, step)
+
+    def supports_algo_orders(self) -> bool:
+        """
+        Return whether exchange-managed protective algo orders should be used.
+
+        Binance demo futures currently rejects STOP_MARKET / TAKE_PROFIT_MARKET
+        on the normal `/fapi/v1/order` endpoint with `-4120`, so we manage
+        protective orders locally while running on Testnet.
+        """
+        return not BINANCE_TESTNET
 
     async def place_market_order(
         self,

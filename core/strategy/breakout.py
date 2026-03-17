@@ -20,7 +20,7 @@ class BreakoutStrategy(BaseStrategy):
         skip_on_chop: bool = True,
         breakout_body_threshold: float = 0.35,
         short_rsi_floor: float = 34.0,
-        short_volume_mult: float = 1.8,
+        short_volume_mult: float = 1.5,
     ) -> None:
         self.volume_mult = volume_mult
         self.adx_rising_bars = adx_rising_bars
@@ -74,10 +74,7 @@ class BreakoutStrategy(BaseStrategy):
         adx = float(curr["adx"]) if not pd.isna(curr["adx"]) else None
         adx_pos = float(curr["adx_pos"]) if "adx_pos" in df.columns and not pd.isna(curr["adx_pos"]) else None
         adx_neg = float(curr["adx_neg"]) if "adx_neg" in df.columns and not pd.isna(curr["adx_neg"]) else None
-        ema21 = float(curr["ema_21"]) if "ema_21" in df.columns and not pd.isna(curr["ema_21"]) else None
-        ema50 = float(curr["ema_50"]) if "ema_50" in df.columns and not pd.isna(curr["ema_50"]) else None
         rsi = float(curr["rsi"]) if "rsi" in df.columns and not pd.isna(curr["rsi"]) else None
-        prev_low = float(prev["low"]) if not pd.isna(prev.get("low")) else None
 
         if bb_upper is None or bb_lower is None or adx is None:
             return signals
@@ -124,6 +121,7 @@ class BreakoutStrategy(BaseStrategy):
                             "breakout_body_ok": bullish_breakout_confirmed,
                             "bb_upper": round(bb_upper, 4),
                             "close": round(close, 4),
+                            "breakout_retest_status": "pending",
                         },
                         reason=(
                             f"Bullish breakout above upper band with "
@@ -139,11 +137,6 @@ class BreakoutStrategy(BaseStrategy):
                 and adx_neg is not None
                 and adx_pos is not None
                 and adx_neg > adx_pos
-                and ema21 is not None
-                and ema50 is not None
-                and close < ema21 < ema50
-                and prev_low is not None
-                and close < prev_low
                 and rsi is not None
                 and rsi >= self.short_rsi_floor
                 and volume > avg_volume * self.short_volume_mult
@@ -174,14 +167,13 @@ class BreakoutStrategy(BaseStrategy):
                             "adx_neg": round(adx_neg, 2),
                             "adx_pos": round(adx_pos, 2),
                             "rsi": round(rsi, 2),
-                            "ema_21": round(ema21, 4),
-                            "ema_50": round(ema50, 4),
                             "bb_lower": round(bb_lower, 4),
                             "close": round(close, 4),
+                            "breakout_retest_status": "pending",
                         },
                         reason=(
                             f"Bearish breakout below lower band with "
-                            f"{volume / avg_volume:.1f}x volume and bearish trend stack"
+                            f"{volume / avg_volume:.1f}x volume and bearish confirmation"
                         ),
                     )
                 )

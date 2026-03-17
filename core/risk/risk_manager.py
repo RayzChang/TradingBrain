@@ -28,6 +28,9 @@ class RiskCheckResult:
     tp2: float = 0.0
     tp3: float = 0.0
     atr: float = 0.0
+    effective_risk_pct: float = 0.0
+    sl_atr_mult: float = 0.0
+    structure_stop_floor_triggered: bool = False
     reason: str = ""
     details: dict = field(default_factory=dict)
 
@@ -80,6 +83,7 @@ class RiskManager:
             entry_price=entry_price,
             atr=atr,
             direction=signal.signal_type,
+            symbol=signal.symbol,
             strategy_name=signal.strategy_name,
             structure_df=signal.indicators.get("_structure_df"),
         )
@@ -95,6 +99,8 @@ class RiskManager:
             entry_price=entry_price,
             atr=atr,
             direction=signal.signal_type,
+            strategy_name=signal.strategy_name,
+            signal_strength=signal.strength,
             stop_loss_price=sl_result.stop_loss,
         )
         if size_result.rejected:
@@ -119,6 +125,9 @@ class RiskManager:
             tp2=sl_result.tp2,
             tp3=sl_result.tp3,
             atr=atr,
+            effective_risk_pct=size_result.effective_risk_pct,
+            sl_atr_mult=sl_result.sl_atr_mult,
+            structure_stop_floor_triggered=sl_result.structure_stop_floor_triggered,
             details={"stage": "passed"},
         )
 

@@ -52,6 +52,9 @@ class DatabaseManager:
                 ("trades", "highest_price", "REAL"),
                 ("trades", "lowest_price", "REAL"),
                 ("trades", "atr_at_entry", "REAL"),
+                ("trades", "effective_risk_pct", "REAL"),
+                ("trades", "sl_atr_mult", "REAL"),
+                ("trades", "structure_stop_floor_triggered", "INTEGER NOT NULL DEFAULT 0"),
             ]
             for table, column, column_type in migration_columns:
                 try:
@@ -330,6 +333,10 @@ class DatabaseManager:
 
     def insert_analysis_log(self, data: dict) -> int:
         """Write a strategy decision log row."""
+        market_snapshot = data.get("market_snapshot")
+        if isinstance(market_snapshot, (dict, list)):
+            data = {**data, "market_snapshot": json.dumps(market_snapshot, ensure_ascii=False)}
+
         sql = (
             "INSERT INTO analysis_logs "
             "(symbol, timeframe, strategy_name, signal_generated, signal_type, "

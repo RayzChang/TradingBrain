@@ -26,6 +26,9 @@ TABLES = {
             highest_price REAL,
             lowest_price REAL,
             atr_at_entry REAL,
+            effective_risk_pct REAL,
+            sl_atr_mult REAL,
+            structure_stop_floor_triggered INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'OPEN'
                 CHECK(status IN ('OPEN', 'CLOSED', 'CANCELLED')),
             pnl REAL,

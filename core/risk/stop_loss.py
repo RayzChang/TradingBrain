@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING
 from loguru import logger
 import pandas as pd
 
-from core.risk.structure_levels import compute_structure_levels
+from core.risk.exit_profiles import get_exit_profile, normalize_strategy_family
+from core.risk.structure_levels import compute_structure_levels, get_structure_stop_floor_mult
 
 if TYPE_CHECKING:
     from database.db_manager import DatabaseManager
@@ -30,6 +31,8 @@ class StopLossResult:
     tp1: float = 0.0
     tp2: float = 0.0
     tp3: float = 0.0
+    sl_atr_mult: float = 0.0
+    structure_stop_floor_triggered: bool = False
     rejected: bool = False
     reason: str = ""
 
@@ -45,11 +48,29 @@ class StopLossCalculator:
             return {}
         return self.db.get_risk_params()
 
+    @staticmethod
+    def _param_with_profile_override(
+        params: dict,
+        family: str,
+        key: str,
+        default: float,
+    ) -> float:
+        """Return a strategy-specific risk param when configured, else the provided default."""
+        if family != "default":
+            override_key = f"{family}_{key}"
+            if override_key in params and params[override_key] is not None:
+                return float(params[override_key])
+            return float(default)
+        if key in params and params[key] is not None:
+            return float(params[key])
+        return float(default)
+
     def compute(
         self,
         entry_price: float,
         atr: float,
         direction: str,
+        symbol: str = "",
         strategy_name: str = "",
         structure_df: pd.DataFrame | None = None,
         stop_loss_atr_mult: float | None = None,
@@ -58,7 +79,9 @@ class StopLossCalculator:
     ) -> StopLossResult:
         """Return stop-loss and take-profit levels for the given strategy."""
         params = self._get_params()
-        is_mean_reversion = strategy_name == "mean_reversion"
+        family = normalize_strategy_family(strategy_name)
+        profile = get_exit_profile(strategy_name)
+        is_mean_reversion = family == "mean_reversion"
 
         if entry_price <= 0 or atr <= 0:
             return StopLossResult(
@@ -68,40 +91,56 @@ class StopLossCalculator:
                 reason="entry/atr invalid",
             )
 
+        sl_mult = (
+            stop_loss_atr_mult
+            if stop_loss_atr_mult is not None
+            else self._param_with_profile_override(
+                params,
+                family,
+                "stop_loss_atr_mult",
+                profile.stop_loss_atr_mult,
+            )
+        )
+        tp1_mult = self._param_with_profile_override(
+            params,
+            family,
+            "tp1_atr_mult",
+            profile.tp1_atr_mult,
+        )
+        tp2_mult = self._param_with_profile_override(
+            params,
+            family,
+            "tp2_atr_mult",
+            profile.tp2_atr_mult,
+        )
         if is_mean_reversion:
-            sl_mult = (
-                stop_loss_atr_mult
-                if stop_loss_atr_mult is not None
-                else float(params.get("mean_reversion_stop_loss_atr_mult", 1.25))
-            )
-            tp1_mult = float(params.get("mean_reversion_tp1_atr_mult", 1.0))
-            tp2_mult = float(params.get("mean_reversion_tp2_atr_mult", 1.8))
             tp3_mult = 0.0
-            min_rr = (
-                min_risk_reward
-                if min_risk_reward is not None
-                else float(params.get("mean_reversion_min_risk_reward", 1.2))
-            )
         else:
-            sl_mult = (
-                stop_loss_atr_mult
-                if stop_loss_atr_mult is not None
-                else float(params.get("stop_loss_atr_mult", 1.5))
-            )
             tp3_mult = (
                 take_profit_atr_mult
                 if take_profit_atr_mult is not None
-                else float(params.get("take_profit_atr_mult", 2.25))
+                else self._param_with_profile_override(
+                    params,
+                    family,
+                    "tp3_atr_mult",
+                    self._param_with_profile_override(
+                        params,
+                        family,
+                        "take_profit_atr_mult",
+                        profile.tp3_atr_mult,
+                    ),
+                )
             )
-            tp1_mult = float(params.get("tp1_atr_mult", tp3_mult * 0.33))
-            tp2_mult = float(
-                params.get("tp2_atr_mult", params.get("partial_tp_atr_mult", tp3_mult * 0.66))
+        min_rr = (
+            min_risk_reward
+            if min_risk_reward is not None
+            else self._param_with_profile_override(
+                params,
+                family,
+                "min_risk_reward",
+                profile.min_risk_reward,
             )
-            min_rr = (
-                min_risk_reward
-                if min_risk_reward is not None
-                else float(params.get("min_risk_reward", 1.5))
-            )
+        )
 
         structure_stop = None
         structure_tp1 = None
@@ -136,7 +175,29 @@ class StopLossCalculator:
             tp3 = entry_price - tp3_distance if tp3_distance > 0 else 0.0
 
         if structure_stop is not None:
-            stop_loss = structure_stop
+            min_atr_mult = get_structure_stop_floor_mult(strategy_name)
+            final_structure_stop = structure_stop
+            structure_floor_triggered = False
+            if min_atr_mult is not None:
+                atr_floor_stop = (
+                    entry_price - (min_atr_mult * atr)
+                    if direction == "LONG"
+                    else entry_price + (min_atr_mult * atr)
+                )
+                if direction == "LONG":
+                    final_structure_stop = min(structure_stop, atr_floor_stop)
+                else:
+                    final_structure_stop = max(structure_stop, atr_floor_stop)
+                if final_structure_stop != structure_stop:
+                    structure_floor_triggered = True
+                    logger.info(
+                        "STRUCTURE_STOP_FLOOR: "
+                        f"{symbol or 'UNKNOWN'} structure={structure_stop:.4f} "
+                        f"atr_floor={atr_floor_stop:.4f} final={final_structure_stop:.4f}"
+                    )
+            stop_loss = final_structure_stop
+        else:
+            structure_floor_triggered = False
         if structure_tp1 is not None:
             tp1 = structure_tp1
         if structure_tp2 is not None:
@@ -167,6 +228,8 @@ class StopLossCalculator:
                 tp1=tp1,
                 tp2=tp2,
                 tp3=tp3,
+                sl_atr_mult=sl_mult,
+                structure_stop_floor_triggered=structure_floor_triggered,
                 rejected=True,
                 reason=f"risk reward below {min_rr}",
             )
@@ -177,5 +240,7 @@ class StopLossCalculator:
             tp1=round(tp1, 4),
             tp2=round(tp2, 4),
             tp3=round(tp3, 4),
+            sl_atr_mult=sl_mult,
+            structure_stop_floor_triggered=structure_floor_triggered,
             rejected=False,
         )

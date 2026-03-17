@@ -16,6 +16,8 @@ from loguru import logger
 
 from core.analysis.engine import FullAnalysis
 from core.pipeline.veto_engine import VetoEngine
+from core.risk.position_sizer import get_strategy_risk_weight
+from core.risk.exit_profiles import normalize_strategy_family
 from core.strategy.base import BaseStrategy, TradeSignal
 
 if TYPE_CHECKING:
@@ -42,6 +44,7 @@ class SignalAggregator:
 
     # 同標的同方向冷卻時間（秒），預設 4 小時
     SYMBOL_COOLDOWN_SEC = 2 * 3600
+    CORRELATED_PAIRS = [("BTCUSDT", "ETHUSDT")]
 
     def __init__(
         self,
@@ -77,6 +80,7 @@ class SignalAggregator:
 
         for strategy in self.strategies:
             sigs = strategy.evaluate_full(full, primary_tf=tf)
+            self._annotate_signal_metadata(sigs)
             candidates.extend(sigs)
 
         if not candidates:
@@ -91,6 +95,7 @@ class SignalAggregator:
 
         passed: list[TradeSignal] = []
         vetoed: list[tuple[TradeSignal, str]] = []
+        open_trades = self.db.get_open_trades() if self.db is not None else []
 
         for sig in candidates:
             if sig.signal_type not in ("LONG", "SHORT"):
@@ -106,7 +111,23 @@ class SignalAggregator:
                 logger.info(f"Signal COOLDOWN: {sig.symbol} {sig.signal_type} - {reason}")
                 continue
 
-            veto = self.veto_engine.evaluate(sig.symbol, sig.signal_type)
+            blocked_by = self._find_correlation_block(sig, open_trades, passed)
+            if blocked_by is not None:
+                reason = f"correlated exposure with {blocked_by}"
+                vetoed.append((sig, reason))
+                logger.info(f"CORRELATION_BLOCK: {sig.symbol} blocked by {blocked_by}")
+                continue
+
+            veto = self.veto_engine.evaluate(
+                sig.symbol,
+                sig.signal_type,
+                market_regime=sig.indicators.get("market_regime"),
+                regime_details={
+                    "scores": sig.indicators.get("regime_scores"),
+                    "metrics": sig.indicators.get("regime_metrics"),
+                    "reasons": sig.indicators.get("regime_reasons"),
+                },
+            )
             if veto.passed:
                 passed.append(sig)
                 # 記錄冷卻時間
@@ -121,6 +142,41 @@ class SignalAggregator:
             self._save_signals(passed, vetoed)
 
         return AggregatorResult(passed=passed, vetoed=vetoed)
+
+    @staticmethod
+    def _annotate_signal_metadata(signals: list[TradeSignal]) -> None:
+        """Attach research metadata needed for later replay analysis."""
+        for sig in signals:
+            sig.indicators["strategy_risk_weight"] = get_strategy_risk_weight(sig.strategy_name)
+            family = normalize_strategy_family(sig.strategy_name)
+            if family == "trend_following":
+                sig.indicators.setdefault("entry_quality_filter_triggered", False)
+            if family == "breakout":
+                sig.indicators.setdefault("breakout_retest_status", "pending")
+
+    @classmethod
+    def _find_correlation_block(
+        cls,
+        signal: TradeSignal,
+        open_trades: list[dict],
+        passed_signals: list[TradeSignal],
+    ) -> str | None:
+        """Return the blocking peer symbol when correlated same-direction exposure exists."""
+        for left, right in cls.CORRELATED_PAIRS:
+            if signal.symbol not in {left, right}:
+                continue
+
+            peer_symbol = right if signal.symbol == left else left
+
+            for trade in open_trades:
+                if trade.get("symbol") == peer_symbol and trade.get("side") == signal.signal_type:
+                    return peer_symbol
+
+            for passed in passed_signals:
+                if passed.symbol == peer_symbol and passed.signal_type == signal.signal_type:
+                    return peer_symbol
+
+        return None
 
     @staticmethod
     def _resolve_conflicts(candidates: list[TradeSignal]) -> list[TradeSignal]:

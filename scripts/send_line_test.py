@@ -1,11 +1,11 @@
-"""Send a UTF-8 LINE test message from a real source file."""
+"""Send a UTF-8 Telegram test message from a real source file."""
 
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from notifications.line_notify import send_line_message
+from notifications.telegram_notify import send_telegram_message
 
 
 def main() -> None:
@@ -14,7 +14,7 @@ def main() -> None:
         "這是一則中文測試訊息。\n"
         "如果你看到這段文字，代表 LINE 推播正常。"
     )
-    ok = send_line_message(message)
+    ok = send_telegram_message(message)
     print("OK" if ok else "FAIL")
 
 

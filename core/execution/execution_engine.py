@@ -17,7 +17,8 @@ from config.settings import (
     TRADING_MODE,
 )
 from core.execution.binance_client import BinanceFuturesClient
-from notifications.line_notify import send_line_message
+from core.risk.exit_profiles import get_exit_profile
+from notifications.telegram_notify import send_telegram_message
 
 if TYPE_CHECKING:
     from core.risk.risk_manager import RiskCheckResult
@@ -76,6 +77,11 @@ async def execute_trade(
     tp2 = getattr(risk_result, "tp2", 0.0) or 0.0
     tp3 = getattr(risk_result, "tp3", 0.0) or 0.0
     atr = getattr(risk_result, "atr", 0.0) or 0.0
+    effective_risk_pct = getattr(risk_result, "effective_risk_pct", 0.0) or 0.0
+    sl_atr_mult = getattr(risk_result, "sl_atr_mult", 0.0) or 0.0
+    structure_stop_floor_triggered = bool(
+        getattr(risk_result, "structure_stop_floor_triggered", False)
+    )
 
     # === paper 璅∪?嚗芋?祆?鈭歹?撖?DB嚗??漱??嚗?==
     if TRADING_MODE == "paper":
@@ -101,6 +107,9 @@ async def execute_trade(
             "highest_price": entry_price,
             "lowest_price": entry_price,
             "atr_at_entry": atr if atr else None,
+            "effective_risk_pct": effective_risk_pct if effective_risk_pct else None,
+            "sl_atr_mult": sl_atr_mult if sl_atr_mult else None,
+            "structure_stop_floor_triggered": int(structure_stop_floor_triggered),
             "status": "OPEN",
             "entry_reason": getattr(signal, "reason", None) or "strategy",
             "strategy_name": strategy_name,
@@ -110,13 +119,13 @@ async def execute_trade(
         trade_id = db.insert_trade(trade_data)
         paper_margin = size_usdt / leverage if leverage else size_usdt
         msg = (
-            f"✅ TradingBrain V5 模擬開倉\n"
+                    f"✅ TradingBrain V6 模擬開倉\n"
             f"{symbol} {signal.signal_type} | 保證金 {paper_margin:.0f}U | 名義倉位 {size_usdt:.0f}U ({leverage}x)\n"
             f"進場: {entry_price:.2f}\n"
             f"SL: {stop_loss:.4f}\n"
             f"TP1: {tp1:.4f} | TP2: {tp2:.4f} | TP3: {tp3:.4f}"
         )
-        send_line_message(msg)
+        send_telegram_message(msg)
         logger.info(f"paper ???? trade_id={trade_id} {symbol} {signal.signal_type}")
         return trade_id
 
@@ -133,6 +142,7 @@ async def execute_trade(
         return None
 
     client = BinanceFuturesClient()
+    exchange_managed_protection = client.supports_algo_orders()
     use_leverage = leverage
     try:
         await client.set_leverage(symbol, leverage)
@@ -152,15 +162,21 @@ async def execute_trade(
         return None
 
     close_side = "SELL" if signal.signal_type == "LONG" else "BUY"
-    if stop_loss and stop_loss > 0:
-        await client.place_stop_loss(
-            symbol, close_side, quantity_base, stop_loss, reduce_only=True
-        )
-    # TP1 ?嚗洵銝?挾甇Ｙ?嚗?0% ??嚗?
-    tp1_qty = quantity_base * 0.3
-    if tp1 and tp1 > 0:
-        await client.place_take_profit(
-            symbol, close_side, tp1_qty, tp1, reduce_only=True
+    if exchange_managed_protection:
+        if stop_loss and stop_loss > 0:
+            await client.place_stop_loss(
+                symbol, close_side, quantity_base, stop_loss, reduce_only=True
+            )
+        profile = get_exit_profile(strategy_name)
+        tp1_qty = quantity_base * profile.tp1_close_pct
+        if tp1 and tp1 > 0:
+            await client.place_take_profit(
+                symbol, close_side, tp1_qty, tp1, reduce_only=True
+            )
+    else:
+        logger.info(
+            f"Testnet protective orders stay local: {symbol} "
+            f"SL/TP managed by position_check"
         )
 
     opened_at = datetime.now(timezone.utc).isoformat()
@@ -181,6 +197,9 @@ async def execute_trade(
         "highest_price": entry_price,
         "lowest_price": entry_price,
         "atr_at_entry": atr if atr else None,
+        "effective_risk_pct": effective_risk_pct if effective_risk_pct else None,
+        "sl_atr_mult": sl_atr_mult if sl_atr_mult else None,
+        "structure_stop_floor_triggered": int(structure_stop_floor_triggered),
         "status": "OPEN",
         "entry_reason": getattr(signal, "reason", None) or "strategy",
         "strategy_name": strategy_name,
@@ -193,14 +212,14 @@ async def execute_trade(
     mode = "Testnet" if BINANCE_TESTNET else "撖衣"
     margin_cost = size_usdt / leverage if leverage else size_usdt
     open_msg = (
-        f"✅ TradingBrain V5 開倉 ({mode})\n"
+                    f"✅ TradingBrain V6 開倉 ({mode})\n"
         f"{symbol} {signal.signal_type} | 策略: {strategy_name}\n"
         f"保證金 {margin_cost:.0f} U | 名義倉位 {size_usdt:.0f} U ({leverage}x)\n"
         f"進場: {entry_price:.4f}\n"
         f"SL: {stop_loss:.4f}\n"
         f"TP1: {tp1:.4f} | TP2: {tp2:.4f} | TP3: {tp3:.4f}"
     )
-    send_line_message(open_msg)
+    send_telegram_message(open_msg)
 
     return trade_id
 

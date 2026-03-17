@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from core.analysis.fibonacci import calculate_fibonacci
+from core.risk.exit_profiles import normalize_strategy_family
 
 
 @dataclass
@@ -24,6 +25,18 @@ class StructureLevels:
     tp2: float | None
     tp3: float | None
     source: str
+
+
+def get_structure_stop_floor_mult(strategy_name: str) -> float | None:
+    """Minimum ATR distance allowed when a structure stop overrides the ATR fallback."""
+    family = normalize_strategy_family(strategy_name)
+    if family == "breakout":
+        return 2.0
+    if family == "trend_following":
+        return 1.2
+    if family == "mean_reversion":
+        return 0.8
+    return None
 
 
 def _recent_swing_low(df: pd.DataFrame, lookback: int = 30, order: int = 2) -> float | None:
@@ -122,7 +135,7 @@ def compute_structure_levels(
         tp2 = target_candidates[1] if len(target_candidates) >= 2 else None
         tp3 = target_candidates[2] if len(target_candidates) >= 3 else None
 
-    if strategy_name == "mean_reversion":
+    if normalize_strategy_family(strategy_name) == "mean_reversion":
         tp3 = None
 
     return StructureLevels(

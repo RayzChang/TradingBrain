@@ -15,6 +15,17 @@ from ta.volume import OnBalanceVolumeIndicator, VolumeWeightedAveragePrice
 from loguru import logger
 
 
+def _safe_round(value, digits: int = 4):
+    """Return a rounded float when possible, otherwise None."""
+    try:
+        value_f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(value_f):
+        return None
+    return round(value_f, digits)
+
+
 def add_all_indicators(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame:
     """
     一次計算所有核心技術指標。
@@ -208,12 +219,30 @@ def get_indicator_summary(df: pd.DataFrame) -> dict:
         return {}
 
     latest = df.iloc[-1]
+    close = latest.get("close", 0)
+    atr = latest.get("atr", 0)
+    atr_ratio = None
+    try:
+        close_f = float(close)
+        atr_f = float(atr)
+        if close_f > 0 and not pd.isna(close_f) and not pd.isna(atr_f):
+            atr_ratio = atr_f / close_f
+    except (TypeError, ValueError):
+        atr_ratio = None
+
     summary = {
         "trend": get_trend_direction(df),
-        "rsi": round(latest.get("rsi", 0), 2),
-        "macd_hist": round(latest.get("macd_hist", 0), 6),
-        "bb_pct": round(latest.get("bb_pct", 0.5), 4),
-        "atr": round(latest.get("atr", 0), 4),
-        "adx": round(latest.get("adx", 0), 2),
+        "close": _safe_round(close, 4),
+        "rsi": _safe_round(latest.get("rsi", 0), 2),
+        "macd_hist": _safe_round(latest.get("macd_hist", 0), 6),
+        "bb_pct": _safe_round(latest.get("bb_pct", 0.5), 4),
+        "bb_width": _safe_round(latest.get("bb_width", 0), 4),
+        "atr": _safe_round(atr, 4),
+        "atr_ratio": _safe_round(atr_ratio, 6),
+        "adx": _safe_round(latest.get("adx", 0), 2),
+        "adx_pos": _safe_round(latest.get("adx_pos", 0), 2),
+        "adx_neg": _safe_round(latest.get("adx_neg", 0), 2),
+        "ema_21": _safe_round(latest.get("ema_21"), 4),
+        "ema_50": _safe_round(latest.get("ema_50"), 4),
     }
     return summary

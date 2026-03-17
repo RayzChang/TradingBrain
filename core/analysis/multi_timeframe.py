@@ -41,6 +41,7 @@ class MTFAnalysis:
 
 # 時間框架排序（由高到低）
 TF_HIERARCHY = ["1d", "4h", "1h", "15m", "5m"]
+DIRECTION_TFS = ["4h", "1h"]
 
 
 def analyze_multi_timeframe(
@@ -58,7 +59,6 @@ def analyze_multi_timeframe(
         MTFAnalysis 結果
     """
     details: dict[str, str] = {}
-    trends: list[str] = []
 
     for tf in TF_HIERARCHY:
         if tf not in kline_data:
@@ -71,9 +71,9 @@ def analyze_multi_timeframe(
         df_with_ind = add_all_indicators(df)
         trend = get_trend_direction(df_with_ind)
         details[tf] = trend
-        trends.append(trend)
 
-    if len(trends) < 2:
+    directional_details = {tf: details.get(tf) for tf in DIRECTION_TFS}
+    if any(directional_details.get(tf) == "INSUFFICIENT" for tf in DIRECTION_TFS):
         return MTFAnalysis(
             alignment=TimeframeAlignment.INSUFFICIENT_DATA,
             details=details,
@@ -81,32 +81,11 @@ def analyze_multi_timeframe(
             recommended_direction=None,
         )
 
-    bullish_count = trends.count("BULLISH")
-    bearish_count = trends.count("BEARISH")
-    total = len(trends)
+    direction_4h = directional_details.get("4h")
+    direction_1h = directional_details.get("1h")
+    valid_directions = {"BULLISH", "BEARISH"}
 
-    if bullish_count == total:
-        return MTFAnalysis(
-            alignment=TimeframeAlignment.ALIGNED_BULLISH,
-            details=details,
-            confidence=1.0,
-            recommended_direction="LONG",
-        )
-    elif bearish_count == total:
-        return MTFAnalysis(
-            alignment=TimeframeAlignment.ALIGNED_BEARISH,
-            details=details,
-            confidence=1.0,
-            recommended_direction="SHORT",
-        )
-
-    # 部分一致：以高時間框架為主
-    htf_trends = []
-    for tf in ["1d", "4h", "1h"]:
-        if tf in details and details[tf] in ("BULLISH", "BEARISH"):
-            htf_trends.append(details[tf])
-
-    if not htf_trends:
+    if direction_4h not in valid_directions or direction_1h not in valid_directions:
         return MTFAnalysis(
             alignment=TimeframeAlignment.CONFLICTING,
             details=details,
@@ -114,31 +93,23 @@ def analyze_multi_timeframe(
             recommended_direction=None,
         )
 
-    htf_bullish = htf_trends.count("BULLISH")
-    htf_bearish = htf_trends.count("BEARISH")
-
-    if htf_bullish > htf_bearish:
-        direction = "LONG"
-        confidence = htf_bullish / len(htf_trends) * (bullish_count / total)
-    elif htf_bearish > htf_bullish:
-        direction = "SHORT"
-        confidence = htf_bearish / len(htf_trends) * (bearish_count / total)
-    else:
+    if direction_4h != direction_1h:
         return MTFAnalysis(
             alignment=TimeframeAlignment.CONFLICTING,
             details=details,
-            confidence=0.3,
+            confidence=0.0,
             recommended_direction=None,
         )
 
     return MTFAnalysis(
         alignment=(
-            TimeframeAlignment.ALIGNED_BULLISH if direction == "LONG"
+            TimeframeAlignment.ALIGNED_BULLISH
+            if direction_4h == "BULLISH"
             else TimeframeAlignment.ALIGNED_BEARISH
         ),
         details=details,
-        confidence=round(confidence, 2),
-        recommended_direction=direction,
+        confidence=1.0,
+        recommended_direction="LONG" if direction_4h == "BULLISH" else "SHORT",
     )
 
 

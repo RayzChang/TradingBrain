@@ -62,7 +62,7 @@ def test_breakout_short_requires_bearish_structure_stack() -> None:
             "low": 93.4,
             "close": 93.8,
             "bb_lower": 94.0,
-            "volume": 220.0,
+            "volume": 140.0,
             "adx": 29.0,
             "adx_pos": 22.0,
             "adx_neg": 20.0,
@@ -106,6 +106,34 @@ def test_breakout_short_emits_when_bearish_breakout_is_confirmed() -> None:
     assert len(signals) == 1
     assert signals[0].signal_type == "SHORT"
     assert signals[0].indicators["breakout_body_ok"] is True
+
+
+def test_breakout_short_allows_early_trend_breaks_without_ema_stack() -> None:
+    rows = _base_rows()
+    rows[-2].update({"close": 94.2, "bb_lower": 94.0, "adx": 28.0, "macd_hist": -0.8, "low": 93.9})
+    rows[-1].update(
+        {
+            "open": 94.0,
+            "high": 94.1,
+            "low": 92.8,
+            "close": 93.0,
+            "bb_lower": 94.0,
+            "volume": 160.0,
+            "adx": 29.0,
+            "adx_pos": 18.0,
+            "adx_neg": 27.0,
+            "rsi": 39.0,
+            "macd_hist": -1.1,
+            "ema_21": 92.7,
+            "ema_50": 92.5,
+        }
+    )
+    strategy = BreakoutStrategy(skip_on_chop=False)
+
+    signals = strategy.evaluate_single("BTCUSDT", "15m", _result(pd.DataFrame(rows)))
+
+    assert len(signals) == 1
+    assert signals[0].signal_type == "SHORT"
 
 
 def test_breakout_short_skips_oversold_flushes() -> None:

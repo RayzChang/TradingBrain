@@ -12,20 +12,31 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from core.execution.binance_client import BinanceFuturesClient
-from notifications.line_notify import send_line_message
+from core.risk.exit_profiles import get_exit_profile, normalize_strategy_family
+from notifications.telegram_notify import send_telegram_message
 
 if TYPE_CHECKING:
     from database.db_manager import DatabaseManager
 
 
-TP1_CLOSE_PCT = 0.30
-TP2_CLOSE_PCT = 0.30
-MEAN_REVERSION_TP1_CLOSE_PCT = 0.75
+def _trade_exit_profile(trade: dict):
+    """Return the shared exit profile for the trade strategy."""
+    return get_exit_profile(trade.get("strategy_name", ""))
+
+
+def _strategy_family(trade: dict) -> str:
+    """Return the normalized strategy family for the trade."""
+    return normalize_strategy_family(trade.get("strategy_name", ""))
 
 
 def _is_mean_reversion_trade(trade: dict) -> bool:
     """Return True when the trade was opened by the mean reversion strategy."""
-    return (trade.get("strategy_name") or "").strip().lower() == "mean_reversion"
+    return _strategy_family(trade) == "mean_reversion"
+
+
+def _supports_exchange_protection(client: BinanceFuturesClient | None) -> bool:
+    """Return True when stop-loss / take-profit algo orders should be managed on exchange."""
+    return client is not None and client.supports_algo_orders()
 
 
 async def sync_positions_from_exchange(
@@ -178,7 +189,7 @@ async def _full_close(
         f"PnL: {total_pnl:+.2f} U ({pnl_pct:+.2f}%)\n"
         f"剩餘倉位: 0"
     )
-    send_line_message(close_msg)
+    send_telegram_message(close_msg)
     logger.info(
         f"Full close completed: {symbol} {side} {exit_reason} pnl={total_pnl:.2f}"
     )
@@ -217,7 +228,8 @@ async def run_position_check(
         highest = float(trade.get("highest_price") or entry)
         lowest = float(trade.get("lowest_price") or entry)
         atr = float(trade.get("atr_at_entry") or 0)
-        is_mean_reversion = _is_mean_reversion_trade(trade)
+        profile = _trade_exit_profile(trade)
+        is_mean_reversion = profile.tp2_final_exit
 
         current = float(prices.get(symbol) or 0)
         if current <= 0:
@@ -236,9 +248,7 @@ async def run_position_check(
                 side == "SHORT" and current <= tp1
             )
             if tp1_hit:
-                tp1_close_pct = (
-                    MEAN_REVERSION_TP1_CLOSE_PCT if is_mean_reversion else TP1_CLOSE_PCT
-                )
+                tp1_close_pct = profile.tp1_close_pct
                 close_qty = original_qty * tp1_close_pct
                 new_qty = current_qty - close_qty
                 success = await _partial_close(db, client, trade, close_qty, current, "TP1")
@@ -253,7 +263,7 @@ async def run_position_check(
                             lowest_price=lowest if side == "SHORT" else None,
                         )
 
-                    if client is not None:
+                    if _supports_exchange_protection(client):
                         await client.cancel_all_orders(symbol)
                         close_side = "SELL" if side == "LONG" else "BUY"
                         await client.place_stop_loss(symbol, close_side, new_qty, new_sl)
@@ -261,7 +271,7 @@ async def run_position_check(
                             await client.place_take_profit(
                                 symbol,
                                 close_side,
-                                new_qty if is_mean_reversion else original_qty * TP2_CLOSE_PCT,
+                                new_qty if is_mean_reversion else original_qty * profile.tp2_close_pct,
                                 tp2,
                             )
 
@@ -273,7 +283,7 @@ async def run_position_check(
                     )
                     if tp2:
                         message += f"\nNext TP2: {tp2:.4f}"
-                    send_line_message(message)
+                    send_telegram_message(message)
                     logger.info(f"TP1 hit: {symbol} {side}")
                     tp_stage = 1
                     stop_loss = new_sl
@@ -284,7 +294,7 @@ async def run_position_check(
                 side == "SHORT" and current <= tp2
             )
             if tp2_hit:
-                close_qty = current_qty if is_mean_reversion else original_qty * TP2_CLOSE_PCT
+                close_qty = current_qty if is_mean_reversion else original_qty * profile.tp2_close_pct
                 new_qty = max(0.0, current_qty - close_qty)
                 success = await _partial_close(db, client, trade, close_qty, current, "TP2")
                 if success:
@@ -297,7 +307,7 @@ async def run_position_check(
                             fee=0,
                             exit_reason="TP2",
                         )
-                        send_line_message(
+                        send_telegram_message(
                             f"TP2 hit\n{symbol} {side} | close remaining {close_qty:.6f}\n剩餘倉位: 0\nExit profile: mean_reversion"
                         )
                         logger.info(f"TP2 final exit: {symbol} {side} mean_reversion")
@@ -315,20 +325,20 @@ async def run_position_check(
                             lowest_price=lowest if side == "SHORT" else None,
                         )
 
-                    if client is not None:
+                    if _supports_exchange_protection(client):
                         await client.cancel_all_orders(symbol)
                         close_side = "SELL" if side == "LONG" else "BUY"
                         await client.place_stop_loss(symbol, close_side, new_qty, new_sl)
 
                     message = (
                         f"TP2 hit\n"
-                        f"{symbol} {side} | close 30% ({close_qty:.6f})\n"
+                        f"{symbol} {side} | close {profile.tp2_close_pct:.0%} ({close_qty:.6f})\n"
                         f"剩餘倉位: {new_qty:.6f}\n"
                         f"Move SL to {new_sl:.4f}"
                     )
                     if tp3:
                         message += f"\nRemaining position trails toward TP3: {tp3:.4f}"
-                    send_line_message(message)
+                    send_telegram_message(message)
                     logger.info(f"TP2 hit: {symbol} {side}")
                     tp_stage = 2
                     stop_loss = new_sl
@@ -340,18 +350,18 @@ async def run_position_check(
             )
             if tp3_hit:
                 await _full_close(db, client, trade, current, "TP3")
-                send_line_message(f"TP3 hit\n{symbol} {side} | final exit @ {current:.4f}")
+                send_telegram_message(f"TP3 hit\n{symbol} {side} | final exit @ {current:.4f}")
                 if risk_manager and hasattr(risk_manager, "update_equity_high_water_mark"):
                     await _update_hwm(client, risk_manager)
                 continue
 
         if tp_stage == 2 and atr > 0 and not is_mean_reversion:
             if side == "LONG":
-                trailing_sl = highest - atr
+                trailing_sl = highest - (atr * profile.tp2_trailing_atr_mult)
                 if trailing_sl > (stop_loss or 0):
                     stop_loss = trailing_sl
                     db.update_trade_trailing(trade_id, stop_loss, highest_price=highest)
-                    if client is not None:
+                    if _supports_exchange_protection(client):
                         await client.cancel_all_orders(symbol)
                         await client.place_stop_loss(symbol, "SELL", current_qty, stop_loss)
                     logger.debug(
@@ -361,11 +371,11 @@ async def run_position_check(
                 elif price_updated:
                     db.update_trade_trailing(trade_id, stop_loss, highest_price=highest)
             else:
-                trailing_sl = lowest + atr
+                trailing_sl = lowest + (atr * profile.tp2_trailing_atr_mult)
                 if trailing_sl < (stop_loss or float("inf")):
                     stop_loss = trailing_sl
                     db.update_trade_trailing(trade_id, stop_loss, lowest_price=lowest)
-                    if client is not None:
+                    if _supports_exchange_protection(client):
                         await client.cancel_all_orders(symbol)
                         await client.place_stop_loss(symbol, "BUY", current_qty, stop_loss)
                     logger.debug(
@@ -377,22 +387,22 @@ async def run_position_check(
 
         elif tp_stage == 1 and atr > 0 and not is_mean_reversion:
             if side == "LONG":
-                trailing_sl = highest - atr * 1.5
+                trailing_sl = highest - (atr * profile.tp1_trailing_atr_mult)
                 if trailing_sl > (stop_loss or 0):
                     stop_loss = trailing_sl
                     db.update_trade_trailing(trade_id, stop_loss, highest_price=highest)
-                    if client is not None:
+                    if _supports_exchange_protection(client):
                         await client.cancel_all_orders(symbol)
                         await client.place_stop_loss(symbol, "SELL", current_qty, stop_loss)
                     logger.debug(f"TP1 trailing SL updated: {symbol} LONG SL={stop_loss:.4f}")
                 elif price_updated:
                     db.update_trade_trailing(trade_id, stop_loss, highest_price=highest)
             else:
-                trailing_sl = lowest + atr * 1.5
+                trailing_sl = lowest + (atr * profile.tp1_trailing_atr_mult)
                 if trailing_sl < (stop_loss or float("inf")):
                     stop_loss = trailing_sl
                     db.update_trade_trailing(trade_id, stop_loss, lowest_price=lowest)
-                    if client is not None:
+                    if _supports_exchange_protection(client):
                         await client.cancel_all_orders(symbol)
                         await client.place_stop_loss(symbol, "BUY", current_qty, stop_loss)
                     logger.debug(

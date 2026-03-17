@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from core.risk.exit_profiles import normalize_strategy_family
+
 if TYPE_CHECKING:
     from database.db_manager import DatabaseManager
 
@@ -16,7 +18,22 @@ class PositionSizeResult:
     size_usdt: float
     leverage: int
     rejected: bool
+    effective_risk_pct: float = 0.0
+    strategy_risk_weight: float = 1.0
+    strength_multiplier: float = 1.0
     reason: str = ""
+
+
+def get_strategy_risk_weight(strategy_name: str) -> float:
+    """Return the sizing risk weight for the strategy family."""
+    family = normalize_strategy_family(strategy_name)
+    if family == "breakout":
+        return 1.0
+    if family == "trend_following":
+        return 0.8
+    if family == "mean_reversion":
+        return 0.7
+    return 1.0
 
 
 def _parse_max_open_positions(value: str | int, balance: float) -> int:
@@ -49,12 +66,19 @@ class PositionSizer:
             return {}
         return self.db.get_risk_params()
 
+    @staticmethod
+    def _strategy_risk_weight(strategy_name: str) -> float:
+        """Return the sizing risk weight for the strategy family."""
+        return get_strategy_risk_weight(strategy_name)
+
     def compute(
         self,
         balance: float,
         entry_price: float,
         atr: float,
         direction: str,
+        strategy_name: str = "",
+        signal_strength: float | None = None,
         stop_loss_atr_mult: float | None = None,
         stop_loss_price: float | None = None,
     ) -> PositionSizeResult:
@@ -66,6 +90,8 @@ class PositionSizer:
             entry_price: Planned entry price.
             atr: Current ATR value.
             direction: ``LONG`` or ``SHORT``.
+            strategy_name: Strategy family used to scale risk.
+            signal_strength: Trade signal confidence multiplier, capped at 1.3x.
             stop_loss_atr_mult: ATR multiple used when no stop-loss price is supplied.
             stop_loss_price: Structure-derived stop-loss price. When valid, sizing uses
                 its actual distance to entry instead of an ATR template.
@@ -88,10 +114,19 @@ class PositionSizer:
                 size_usdt=0.0,
                 leverage=1,
                 rejected=True,
+                effective_risk_pct=0.0,
+                strategy_risk_weight=1.0,
+                strength_multiplier=1.0,
                 reason="balance/price/atr invalid",
             )
 
-        risk_amount = balance * max_risk
+        strategy_weight = self._strategy_risk_weight(strategy_name)
+        strength_mult = 1.0
+        if signal_strength is not None:
+            strength_mult = max(0.0, min(float(signal_strength), 1.3))
+
+        effective_risk = max_risk * strategy_weight * strength_mult
+        risk_amount = balance * effective_risk
 
         stop_distance_pct = 0.0
         if stop_loss_price is not None and stop_loss_price > 0:
@@ -103,6 +138,9 @@ class PositionSizer:
                 size_usdt=0.0,
                 leverage=1,
                 rejected=True,
+                effective_risk_pct=effective_risk,
+                strategy_risk_weight=strategy_weight,
+                strength_multiplier=strength_mult,
                 reason="stop distance must be positive",
             )
 
@@ -129,6 +167,9 @@ class PositionSizer:
                 size_usdt=0.0,
                 leverage=1,
                 rejected=True,
+                effective_risk_pct=effective_risk,
+                strategy_risk_weight=strategy_weight,
+                strength_multiplier=strength_mult,
                 reason=f"position size {size_usdt:.2f} < min notional {min_notional} USDT",
             )
 
@@ -136,6 +177,9 @@ class PositionSizer:
             size_usdt=round(size_usdt, 2),
             leverage=leverage,
             rejected=False,
+            effective_risk_pct=round(effective_risk, 6),
+            strategy_risk_weight=strategy_weight,
+            strength_multiplier=strength_mult,
         )
 
     def max_open_positions(self, balance: float) -> int:

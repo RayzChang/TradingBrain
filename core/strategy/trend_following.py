@@ -21,6 +21,13 @@ class TrendFollowingStrategy(BaseStrategy):
         long_rsi_ceiling: float = 68.0,
         short_rsi_floor: float = 32.0,
         short_rsi_ceiling: float = 48.0,
+        long_bb_position_ceiling: float = 0.85,
+        long_rsi_quality_ceiling: float = 63.0,
+        long_rsi_bb_position_ceiling: float = 0.75,
+        short_bb_position_floor: float = 0.15,
+        short_rsi_quality_floor: float = 37.0,
+        short_rsi_bb_position_floor: float = 0.25,
+        max_cross_age_bars: int = 30,
     ) -> None:
         self.adx_min = adx_min
         self.skip_on_chop = skip_on_chop
@@ -29,10 +36,55 @@ class TrendFollowingStrategy(BaseStrategy):
         self.long_rsi_ceiling = long_rsi_ceiling
         self.short_rsi_floor = short_rsi_floor
         self.short_rsi_ceiling = short_rsi_ceiling
+        self.long_bb_position_ceiling = long_bb_position_ceiling
+        self.long_rsi_quality_ceiling = long_rsi_quality_ceiling
+        self.long_rsi_bb_position_ceiling = long_rsi_bb_position_ceiling
+        self.short_bb_position_floor = short_bb_position_floor
+        self.short_rsi_quality_floor = short_rsi_quality_floor
+        self.short_rsi_bb_position_floor = short_rsi_bb_position_floor
+        self.max_cross_age_bars = max_cross_age_bars
 
     @property
     def name(self) -> str:
         return "trend_following"
+
+    def _get_bb_position(self, curr: pd.Series) -> float | None:
+        bb_pct = curr.get("bb_pct")
+        if bb_pct is not None and not (isinstance(bb_pct, float) and pd.isna(bb_pct)):
+            return float(bb_pct)
+
+        close = curr.get("close")
+        bb_upper = curr.get("bb_upper")
+        bb_lower = curr.get("bb_lower")
+        values = (close, bb_upper, bb_lower)
+        if any(value is None or (isinstance(value, float) and pd.isna(value)) for value in values):
+            return None
+
+        band_range = float(bb_upper) - float(bb_lower)
+        if band_range <= 0:
+            return None
+        return (float(close) - float(bb_lower)) / band_range
+
+    def _get_cross_age_bars(self, df: pd.DataFrame, bullish: bool) -> int | None:
+        for idx in range(len(df) - 1, 0, -1):
+            prev = df.iloc[idx - 1]
+            curr = df.iloc[idx]
+            prev_ema9 = prev.get("ema_9")
+            prev_ema21 = prev.get("ema_21")
+            curr_ema9 = curr.get("ema_9")
+            curr_ema21 = curr.get("ema_21")
+            values = (prev_ema9, prev_ema21, curr_ema9, curr_ema21)
+            if any(value is None or (isinstance(value, float) and pd.isna(value)) for value in values):
+                continue
+
+            if bullish and prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21:
+                return len(df) - 1 - idx
+            if not bullish and prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21:
+                return len(df) - 1 - idx
+        return None
+
+    def _log_entry_quality_filter(self, symbol: str, reason: str) -> None:
+        logger.info(f"ENTRY_QUALITY_FILTER: {symbol} {reason}")
 
     def evaluate_single(
         self,
@@ -73,6 +125,7 @@ class TrendFollowingStrategy(BaseStrategy):
         rsi_curr = curr.get("rsi")
         macd_hist_curr = curr.get("macd_hist")
         macd_hist_prev = prev.get("macd_hist")
+        bb_position = self._get_bb_position(curr)
 
         if any(
             value is None or (isinstance(value, float) and pd.isna(value))
@@ -142,6 +195,34 @@ class TrendFollowingStrategy(BaseStrategy):
                 )
                 return signals
 
+            bullish_cross_age = self._get_cross_age_bars(df, bullish=True)
+            if bb_position is not None and bb_position > self.long_bb_position_ceiling:
+                self._log_entry_quality_filter(
+                    symbol,
+                    f"LONG_bb_position_{bb_position:.2f}_above_{self.long_bb_position_ceiling:.2f}",
+                )
+                return signals
+            if (
+                rsi_curr is not None
+                and bb_position is not None
+                and rsi_curr > self.long_rsi_quality_ceiling
+                and bb_position > self.long_rsi_bb_position_ceiling
+            ):
+                self._log_entry_quality_filter(
+                    symbol,
+                    (
+                        f"LONG_rsi_{float(rsi_curr):.2f}_and_bb_position_{bb_position:.2f}"
+                        f"_above_{self.long_rsi_bb_position_ceiling:.2f}"
+                    ),
+                )
+                return signals
+            if bullish_cross_age is not None and bullish_cross_age > self.max_cross_age_bars:
+                self._log_entry_quality_filter(
+                    symbol,
+                    f"LONG_cross_age_{bullish_cross_age}_bars_above_{self.max_cross_age_bars}",
+                )
+                return signals
+
             strength = min(0.5 + (adx - self.adx_min) / 50.0, 1.0)
             strength = max(0.0, strength)
 
@@ -172,6 +253,9 @@ class TrendFollowingStrategy(BaseStrategy):
                             "adx_neg": round(float(adx_neg_curr), 2) if adx_neg_curr is not None else None,
                             "rsi": round(float(rsi_curr), 2) if rsi_curr is not None else None,
                             "macd_hist": round(float(macd_hist_curr), 4) if macd_hist_curr is not None else None,
+                            "bb_position": round(float(bb_position), 4) if bb_position is not None else None,
+                            "cross_age_bars": bullish_cross_age,
+                            "entry_quality_filter_triggered": False,
                             "bullish_stack_ok": bullish_stack_ok,
                             "bullish_momentum_ok": bullish_momentum_ok,
                             "candle_confirm": candle_bonus,
@@ -231,6 +315,34 @@ class TrendFollowingStrategy(BaseStrategy):
                 )
                 return signals
 
+            bearish_cross_age = self._get_cross_age_bars(df, bullish=False)
+            if bb_position is not None and bb_position < self.short_bb_position_floor:
+                self._log_entry_quality_filter(
+                    symbol,
+                    f"SHORT_bb_position_{bb_position:.2f}_below_{self.short_bb_position_floor:.2f}",
+                )
+                return signals
+            if (
+                rsi_curr is not None
+                and bb_position is not None
+                and rsi_curr < self.short_rsi_quality_floor
+                and bb_position < self.short_rsi_bb_position_floor
+            ):
+                self._log_entry_quality_filter(
+                    symbol,
+                    (
+                        f"SHORT_rsi_{float(rsi_curr):.2f}_and_bb_position_{bb_position:.2f}"
+                        f"_below_{self.short_rsi_bb_position_floor:.2f}"
+                    ),
+                )
+                return signals
+            if bearish_cross_age is not None and bearish_cross_age > self.max_cross_age_bars:
+                self._log_entry_quality_filter(
+                    symbol,
+                    f"SHORT_cross_age_{bearish_cross_age}_bars_above_{self.max_cross_age_bars}",
+                )
+                return signals
+
             strength = min(0.5 + (adx - self.adx_min) / 50.0, 1.0)
             strength = max(0.0, strength)
 
@@ -261,6 +373,9 @@ class TrendFollowingStrategy(BaseStrategy):
                             "adx_neg": round(float(adx_neg_curr), 2) if adx_neg_curr is not None else None,
                             "rsi": round(float(rsi_curr), 2) if rsi_curr is not None else None,
                             "macd_hist": round(float(macd_hist_curr), 4) if macd_hist_curr is not None else None,
+                            "bb_position": round(float(bb_position), 4) if bb_position is not None else None,
+                            "cross_age_bars": bearish_cross_age,
+                            "entry_quality_filter_triggered": False,
                             "bearish_stack_ok": bearish_stack_ok,
                             "bearish_momentum_ok": bearish_momentum_ok,
                             "candle_confirm": candle_bonus,

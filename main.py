@@ -19,7 +19,7 @@ import json
 import signal
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +31,7 @@ from config.settings import (
     TRADING_MODE, DB_PATH, KLINE_DATA_DIR,
     SCHEDULER_CONFIG, DEFAULT_WATCHLIST,
     API_PORT,
+    LOG_DIR,
     TRADING_INITIAL_BALANCE,
     DEFAULT_LEVERAGE,
     runtime_config_errors,
@@ -48,18 +49,20 @@ from core.pipeline.liquidation import LiquidationMonitor
 from core.pipeline.veto_engine import VetoEngine
 from core.analysis.engine import AnalysisEngine
 from core.analysis.chop_detector import detect_chop
-from core.strategy.base import TradeSignal
+from core.strategy.base import MarketRegime, TradeSignal
 from core.strategy.trend_following import TrendFollowingStrategy
 from core.strategy.mean_reversion import MeanReversionStrategy
 from core.strategy.breakout import BreakoutStrategy
 from core.strategy.signal_aggregator import SignalAggregator
 from core.strategy.coin_screener import CoinScreener
+from core.risk.exit_profiles import normalize_strategy_family
+from core.risk.position_sizer import get_strategy_risk_weight
 from core.risk.risk_manager import RiskManager, RiskCheckResult
 from core.brain import get_overrides as brain_get_overrides
 from core.execution.execution_engine import execute_trade, is_trading_enabled
 from core.execution.binance_client import BinanceFuturesClient
 from core.execution.position_manager import sync_positions_from_exchange, run_position_check
-from notifications.line_notify import send_line_message
+from notifications.telegram_notify import send_telegram_message
 from database.db_manager import DatabaseManager
 
 
@@ -74,10 +77,28 @@ class PendingEntry:
     trigger_close: float
     atr: float
     structure_df: pd.DataFrame | None
+    state: str = "pending"
+    breakout_price: float = 0.0
+    breakout_bar_time: str = ""
+    expire_bars: int = 15
+    signal_strength: float = 0.0
+    retest_zone_low: float = 0.0
+    retest_zone_high: float = 0.0
+    bars_waited: int = 0
+
+
+@dataclass
+class EntryTriggerCheck:
+    triggered: bool
+    reason: str
 
 
 class TradingBrain:
     """交易系統主控制器"""
+
+    BREAKOUT_RETEST_TOLERANCE_PCT = 0.0035
+    BREAKOUT_RETEST_EXPIRE_BARS = 3
+    ENABLE_TESTNET_FALLBACK = False
 
     def __init__(self) -> None:
         self.running = False
@@ -97,6 +118,90 @@ class TradingBrain:
         self._startup_time: float = 0.0
         self._testnet_fallback_done: bool = False  # Testnet 保底開單僅觸發一次
         self._pending_entries: dict[str, list[PendingEntry]] = {}
+
+    @staticmethod
+    def _mtf_gate_passed(full) -> bool:
+        """Return whether the strict Phase 3 MTF gate would pass for the current setup."""
+        if full.mtf is None:
+            return False
+        details = full.mtf.details or {}
+        direction_4h = details.get("4h")
+        direction_1h = details.get("1h")
+        valid = {"BULLISH", "BEARISH"}
+        return (
+            direction_4h in valid
+            and direction_1h in valid
+            and direction_4h == direction_1h
+            and full.mtf.recommended_direction is not None
+        )
+
+    @staticmethod
+    def _with_signal_research_fields(
+        base_snapshot: dict | str | None,
+        sig: TradeSignal,
+        *,
+        breakout_retest_status: str | None = None,
+    ) -> dict:
+        """Merge per-signal research metadata into a market snapshot payload."""
+        if isinstance(base_snapshot, str):
+            try:
+                snapshot = json.loads(base_snapshot)
+            except json.JSONDecodeError:
+                snapshot = {}
+        else:
+            snapshot = dict(base_snapshot or {})
+        family = normalize_strategy_family(sig.strategy_name)
+        snapshot["strategy_name"] = sig.strategy_name
+        snapshot["signal_strength"] = sig.strength
+        snapshot["strategy_risk_weight"] = get_strategy_risk_weight(sig.strategy_name)
+        snapshot["entry_quality_filter_triggered"] = bool(
+            sig.indicators.get("entry_quality_filter_triggered", False)
+        ) if family == "trend_following" else False
+        snapshot["breakout_retest_status"] = (
+            breakout_retest_status
+            if breakout_retest_status is not None
+            else sig.indicators.get("breakout_retest_status")
+        )
+        return snapshot
+
+    @staticmethod
+    def _snapshot_from_json(snapshot_json: str | None, **updates) -> dict | None:
+        """Load a snapshot JSON blob, merge updates, and return a dict payload."""
+        if not snapshot_json:
+            base: dict = {}
+        else:
+            try:
+                base = json.loads(snapshot_json)
+            except json.JSONDecodeError:
+                base = {}
+        base.update(updates)
+        return base
+
+    def _append_daily_report_log(self, report_payload: dict) -> None:
+        """Persist daily summary snapshots for later strategy review."""
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        daily_dir = LOG_DIR / "daily_reports"
+        daily_dir.mkdir(parents=True, exist_ok=True)
+
+        report_date = report_payload["report_date"]
+        text_lines = [
+            "TradingBrain Daily Report",
+            f"report_date: {report_payload['report_date']}",
+            f"timezone: {report_payload['timezone']}",
+            f"mode: {report_payload['mode']}",
+            f"trades_count: {report_payload['trades_count']}",
+            f"daily_pnl: {report_payload['daily_pnl']:+.2f}",
+            f"open_positions: {report_payload['open_positions']}",
+            f"exchange_balance: {report_payload['exchange_balance']}",
+            f"generated_at: {report_payload['generated_at']}",
+        ]
+
+        daily_file = daily_dir / f"{report_date}.md"
+        daily_file.write_text("\n".join(text_lines) + "\n", encoding="utf-8")
+
+        history_file = daily_dir / "history.jsonl"
+        with history_file.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(report_payload, ensure_ascii=False) + "\n")
 
     async def startup(self) -> None:
         """系統啟動序列"""
@@ -136,11 +241,14 @@ class TradingBrain:
         logger.info("=" * 60)
         logger.info("TradingBrain 啟動中...")
         logger.info(f"交易模式: {TRADING_MODE}")
+        if not self.ENABLE_TESTNET_FALLBACK:
+            logger.info("Testnet fallback 已停用（Phase 3 正式測試期間）")
         logger.info("=" * 60)
 
         # 確保必要目錄存在
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         KLINE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (LOG_DIR / "daily_reports").mkdir(parents=True, exist_ok=True)
 
         # 1. 資料庫已在上方初始化（API 注入後）
 
@@ -222,10 +330,10 @@ class TradingBrain:
         except Exception:
             max_risk_pct, max_lev, sl_atr, tp_atr, preset_label = 3.0, 5, 1.5, 4.0, "passive_income"
 
-        # LINE 啟動通知
+        # Telegram 啟動通知
         mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
-        send_line_message(
-            f"🧠 TradingBrain V5 {mode_tag} 已啟動\n"
+        send_telegram_message(
+                f"🧠 TradingBrain V6 {mode_tag} 已啟動\n"
             f"模式: {TRADING_MODE} | 幣種: {len(DEFAULT_WATCHLIST)}\n"
             f"策略: 趨勢追蹤 + 突破 + 均值回歸\n"
             f"(市場狀態自適應 · {preset_label})\n"
@@ -445,38 +553,75 @@ class TradingBrain:
 
         full = self.analysis_engine.analyze_full(symbol, kline_data)
         snapshot = self.analysis_engine.get_analysis_snapshot(full)
+        primary = full.single_tf_results.get(full.primary_tf)
+        regime_assessment = (
+            MarketRegime.assess(primary, full=full) if primary else None
+        )
 
         logger.info(
             f"MTF分析 {symbol}: "
             f"趨勢={snapshot.get('mtf', {}).get('alignment', 'N/A')}, "
             f"方向={snapshot.get('mtf', {}).get('direction', 'N/A')}, "
-            f"信心={snapshot.get('mtf', {}).get('confidence', 0):.0%}"
+            f"信心={snapshot.get('mtf', {}).get('confidence', 0):.0%}, "
+            f"regime={regime_assessment.regime if regime_assessment else 'N/A'}"
         )
 
         # ── 市場快照（開單當下的指標數值，供覆盤分析）──
-        primary = full.single_tf_results.get(full.primary_tf)
         market_snap = {}
         if primary and primary.df_enriched is not None:
             df_e = primary.df_enriched
             last_row = df_e.iloc[-1] if len(df_e) > 0 else None
             if last_row is not None:
+                close_val = float(last_row.get("close", 0))
+                atr_val = float(last_row.get("atr", 0)) if "atr" in df_e.columns else 0.0
                 market_snap = {
-                    "close": float(last_row.get("close", 0)),
+                    "close": close_val,
                     "rsi": round(float(last_row.get("rsi", 0)), 2) if "rsi" in df_e.columns else None,
                     "adx": round(float(last_row.get("adx", 0)), 2) if "adx" in df_e.columns else None,
                     "macd": round(float(last_row.get("macd", 0)), 4) if "macd" in df_e.columns else None,
                     "macd_signal": round(float(last_row.get("macd_signal", 0)), 4) if "macd_signal" in df_e.columns else None,
                     "bb_upper": round(float(last_row.get("bb_upper", 0)), 2) if "bb_upper" in df_e.columns else None,
                     "bb_lower": round(float(last_row.get("bb_lower", 0)), 2) if "bb_lower" in df_e.columns else None,
-                    "atr": round(float(last_row.get("atr", 0)), 4) if "atr" in df_e.columns else None,
-                    "ema_fast": round(float(last_row.get("ema_fast", 0)), 2) if "ema_fast" in df_e.columns else None,
-                    "ema_slow": round(float(last_row.get("ema_slow", 0)), 2) if "ema_slow" in df_e.columns else None,
+                    "atr": round(atr_val, 4) if "atr" in df_e.columns else None,
+                    "atr_ratio": round(atr_val / close_val, 6) if close_val > 0 and atr_val > 0 else None,
+                    "bb_width": round(float(last_row.get("bb_width", 0)), 4) if "bb_width" in df_e.columns else None,
+                    "adx_pos": round(float(last_row.get("adx_pos", 0)), 2) if "adx_pos" in df_e.columns else None,
+                    "adx_neg": round(float(last_row.get("adx_neg", 0)), 2) if "adx_neg" in df_e.columns else None,
+                    "ema_21": round(float(last_row.get("ema_21", 0)), 2) if "ema_21" in df_e.columns else None,
+                    "ema_50": round(float(last_row.get("ema_50", 0)), 2) if "ema_50" in df_e.columns else None,
                     "volume": float(last_row.get("volume", 0)),
                     "mtf_direction": snapshot.get("mtf", {}).get("direction"),
+                    "mtf_4h_direction": full.mtf.details.get("4h") if full.mtf else None,
+                    "mtf_1h_direction": full.mtf.details.get("1h") if full.mtf else None,
+                    "mtf_gate_passed": self._mtf_gate_passed(full),
                     "mtf_alignment": snapshot.get("mtf", {}).get("alignment"),
                     "mtf_confidence": snapshot.get("mtf", {}).get("confidence"),
                 }
-        market_snap_json = json.dumps(market_snap, ensure_ascii=False) if market_snap else None
+        if regime_assessment is not None:
+            market_snap["regime"] = regime_assessment.regime
+            market_snap["market_regime"] = regime_assessment.regime
+            market_snap["regime_scores"] = {
+                "trend": round(regime_assessment.trend_score, 2),
+                "range": round(regime_assessment.range_score, 2),
+                "volatile": round(regime_assessment.volatility_score, 2),
+            }
+            market_snap["regime_metrics"] = regime_assessment.metrics
+            market_snap["regime_reasons"] = regime_assessment.reasons
+
+        if regime_assessment is not None:
+            self.db.insert_analysis_log({
+                "symbol": symbol,
+                "timeframe": full.primary_tf,
+                "strategy_name": "regime_monitor",
+                "signal_generated": 0,
+                "signal_type": None,
+                "signal_strength": None,
+                "veto_passed": None,
+                "veto_reasons": None,
+                "veto_details": None,
+                "final_action": "REGIME_OBSERVATION",
+                "market_snapshot": market_snap,
+            })
 
         # 策略評估 + 否決過濾，通過信號寫入 DB
         agg_result = self.signal_aggregator.evaluate(full, save_to_db=True)
@@ -496,7 +641,13 @@ class TradingBrain:
                     "veto_reasons": None,
                     "veto_details": None,
                     "final_action": "PENDING_RISK",
-                    "market_snapshot": market_snap_json,
+                    "market_snapshot": self._with_signal_research_fields(
+                        market_snap,
+                        sig,
+                        breakout_retest_status=(
+                            "pending" if normalize_strategy_family(sig.strategy_name) == "breakout" else None
+                        ),
+                    ),
                 })
             # 記錄所有被否決的信號
             for sig, reason in agg_result.vetoed:
@@ -511,7 +662,13 @@ class TradingBrain:
                     "veto_reasons": reason,
                     "veto_details": None,
                     "final_action": "VETOED",
-                    "market_snapshot": market_snap_json,
+                    "market_snapshot": self._with_signal_research_fields(
+                        market_snap,
+                        sig,
+                        breakout_retest_status=(
+                            "pending" if normalize_strategy_family(sig.strategy_name) == "breakout" else None
+                        ),
+                    ),
                 })
         else:
             # 沒有任何信號產生 — 記錄「為什麼不開單」
@@ -526,7 +683,7 @@ class TradingBrain:
                 "veto_reasons": None,
                 "veto_details": None,
                 "final_action": "NO_SIGNAL",
-                "market_snapshot": market_snap_json,
+                "market_snapshot": market_snap,
             })
 
         if agg_result.passed:
@@ -541,21 +698,27 @@ class TradingBrain:
             await self._queue_pending_entries(
                 agg_result.passed,
                 primary,
-                market_snap_json,
+                market_snap,
             )
 
         # 保底開單（僅觸發一次）：避免長時間 0 倉，讓整條流程可被驗證/訓練
         if (
+            self.ENABLE_TESTNET_FALLBACK
+            and (
             (BINANCE_TESTNET or TRADING_MODE == "paper")
             and (is_trading_enabled() or TRADING_MODE == "paper")
             and not self._testnet_fallback_done
             and (time.time() - self._startup_time) >= (20 * 60 if TRADING_MODE == "paper" else 90 * 60)
             and len(self.db.get_open_trades()) == 0
+            )
         ):
             await self._try_testnet_fallback_order()
 
     async def _try_testnet_fallback_order(self) -> None:
         """Testnet 專用：一次小額 BTCUSDT LONG 以驗證下單流程（僅觸發一次）"""
+        if not self.ENABLE_TESTNET_FALLBACK:
+            logger.info("Testnet fallback 已停用，略過保底開單")
+            return
         self._testnet_fallback_done = True
         symbol = "BTCUSDT"
         cache_candles = self.ws_feed.cache.get(symbol.lower(), "15m") if self.ws_feed else []
@@ -601,7 +764,7 @@ class TradingBrain:
         self,
         signals: list[TradeSignal],
         primary,
-        market_snapshot_json: str | None,
+        market_snapshot: dict | None,
     ) -> None:
         if not signals or primary.df_enriched is None:
             return
@@ -620,9 +783,39 @@ class TradingBrain:
 
         for sig in signals:
             sig.indicators["_structure_df"] = primary.df_enriched.tail(200).copy()
+            breakout_price = 0.0
+            zone_low = 0.0
+            zone_high = 0.0
+            expire_bars = 15
+            breakout_bar_time = ""
+            final_action = "PENDING_TRIGGER"
+            if sig.strategy_name == "breakout":
+                if sig.signal_type == "LONG":
+                    breakout_price = float(latest.get("bb_upper", latest.get("close", 0)))
+                else:
+                    breakout_price = float(latest.get("bb_lower", latest.get("close", 0)))
+                tolerance = breakout_price * self.BREAKOUT_RETEST_TOLERANCE_PCT
+                zone_low = breakout_price - tolerance
+                zone_high = breakout_price + tolerance
+                expire_bars = self.BREAKOUT_RETEST_EXPIRE_BARS
+                breakout_bar_time_raw = latest.get("open_time") or latest.get("close_time")
+                if isinstance(breakout_bar_time_raw, pd.Timestamp):
+                    breakout_bar_time = breakout_bar_time_raw.isoformat()
+                elif breakout_bar_time_raw is not None:
+                    breakout_bar_time = str(breakout_bar_time_raw)
+                final_action = "BREAKOUT_PENDING"
             pending = PendingEntry(
                 signal=sig,
-                market_snapshot_json=market_snapshot_json,
+                market_snapshot_json=json.dumps(
+                    self._with_signal_research_fields(
+                        market_snapshot or {},
+                        sig,
+                        breakout_retest_status=(
+                            "pending" if normalize_strategy_family(sig.strategy_name) == "breakout" else None
+                        ),
+                    ),
+                    ensure_ascii=False,
+                ) if market_snapshot is not None else None,
                 setup_time=current_time,
                 expires_at=current_time + 15 * 60,
                 trigger_high=float(latest.get("high", latest.get("close", 0))),
@@ -630,6 +823,12 @@ class TradingBrain:
                 trigger_close=float(latest.get("close", 0)),
                 atr=atr,
                 structure_df=primary.df_enriched.tail(200).copy(),
+                breakout_price=breakout_price,
+                breakout_bar_time=breakout_bar_time,
+                expire_bars=expire_bars,
+                signal_strength=sig.strength,
+                retest_zone_low=zone_low,
+                retest_zone_high=zone_high,
             )
             pending_for_symbol.append(pending)
             self.db.insert_analysis_log({
@@ -640,13 +839,144 @@ class TradingBrain:
                 "signal_type": sig.signal_type,
                 "signal_strength": sig.strength,
                 "veto_passed": 1,
-                "final_action": "PENDING_TRIGGER",
-                "market_snapshot": market_snapshot_json,
+                "final_action": final_action,
+                "market_snapshot": self._with_signal_research_fields(
+                    market_snapshot or {},
+                    sig,
+                    breakout_retest_status=(
+                        "pending" if normalize_strategy_family(sig.strategy_name) == "breakout" else None
+                    ),
+                ),
+            })
+            if sig.strategy_name == "breakout":
+                logger.info(
+                    f"候選訊號已建立: {sig.symbol} {sig.signal_type} breakout "
+                    f"(等待 1m retest，{expire_bars} 根內有效)"
+                )
+            else:
+                logger.info(
+                    f"候選訊號已建立: {sig.symbol} {sig.signal_type} {sig.strategy_name} "
+                    f"(等待 1m 觸發，15 分鐘內有效)"
+                )
+
+    def _build_breakout_retest_signal(self, pending: PendingEntry) -> TradeSignal:
+        indicators = dict(pending.signal.indicators)
+        indicators.update({
+            "breakout_price": round(pending.breakout_price, 6),
+            "retest_zone_low": round(pending.retest_zone_low, 6),
+            "retest_zone_high": round(pending.retest_zone_high, 6),
+            "retest_confirmed": True,
+            "breakout_retest_status": "confirmed",
+            "strategy_family": "breakout",
+        })
+        return replace(
+            pending.signal,
+            strategy_name="breakout_retest",
+            indicators=indicators,
+            reason=(
+                f"{pending.signal.reason} | retest confirmed at "
+                f"{pending.breakout_price:.4f}"
+            ),
+        )
+
+    def _process_breakout_retest_entry(
+        self,
+        pending: PendingEntry,
+        one_min_result,
+    ) -> tuple[PendingEntry | None, EntryTriggerCheck, TradeSignal | None]:
+        if one_min_result.df_enriched is None or one_min_result.df_enriched.empty:
+            return pending, EntryTriggerCheck(False, "1m data unavailable"), None
+
+        curr = one_min_result.df_enriched.iloc[-1]
+        close = float(curr.get("close", 0))
+        open_price = float(curr.get("open", close))
+        high = float(curr.get("high", close))
+        low = float(curr.get("low", close))
+        ema9 = curr.get("ema_9")
+
+        in_retest_zone = (
+            high >= pending.retest_zone_low and low <= pending.retest_zone_high
+        )
+
+        next_bars_waited = pending.bars_waited + 1
+
+        if pending.state == "pending" and in_retest_zone:
+            pending.state = "retest_zone"
+            self.db.insert_analysis_log({
+                "symbol": pending.signal.symbol,
+                "timeframe": "1m_trigger",
+                "strategy_name": pending.signal.strategy_name,
+                "signal_generated": 1,
+                "signal_type": pending.signal.signal_type,
+                "signal_strength": pending.signal.strength,
+                "veto_passed": 1,
+                "final_action": "BREAKOUT_RETEST_HIT",
+                "market_snapshot": self._snapshot_from_json(
+                    pending.market_snapshot_json,
+                    breakout_retest_status="pending",
+                ),
             })
             logger.info(
-                f"候選訊號已建立: {sig.symbol} {sig.signal_type} {sig.strategy_name} "
-                f"(等待 1m 觸發，15 分鐘內有效)"
+                f"BREAKOUT_RETEST_HIT: {pending.signal.symbol} "
+                f"{pending.signal.signal_type} zone="
+                f"[{pending.retest_zone_low:.4f}, {pending.retest_zone_high:.4f}]"
             )
+
+        if pending.state == "retest_zone":
+            if pending.signal.signal_type == "LONG":
+                checks = {
+                    "close_above_breakout": close > pending.breakout_price,
+                    "green_candle": close > open_price,
+                    "above_ema9": ema9 is not None and close > float(ema9),
+                }
+            else:
+                checks = {
+                    "close_below_breakout": close < pending.breakout_price,
+                    "red_candle": close < open_price,
+                    "below_ema9": ema9 is not None and close < float(ema9),
+                }
+            failed = [name for name, ok in checks.items() if not ok]
+            if not failed:
+                confirmed_signal = self._build_breakout_retest_signal(pending)
+                self.db.insert_analysis_log({
+                    "symbol": confirmed_signal.symbol,
+                    "timeframe": "1m_trigger",
+                    "strategy_name": confirmed_signal.strategy_name,
+                    "signal_generated": 1,
+                    "signal_type": confirmed_signal.signal_type,
+                    "signal_strength": confirmed_signal.strength,
+                    "veto_passed": 1,
+                    "final_action": "BREAKOUT_CONFIRMED",
+                    "market_snapshot": self._snapshot_from_json(
+                        pending.market_snapshot_json,
+                        breakout_retest_status="confirmed",
+                    ),
+                })
+                return None, EntryTriggerCheck(True, "triggered"), confirmed_signal
+
+        pending.bars_waited = next_bars_waited
+        if pending.bars_waited >= pending.expire_bars:
+            self.db.insert_analysis_log({
+                "symbol": pending.signal.symbol,
+                "timeframe": "1m_trigger",
+                "strategy_name": pending.signal.strategy_name,
+                "signal_generated": 1,
+                "signal_type": pending.signal.signal_type,
+                "signal_strength": pending.signal.strength,
+                "veto_passed": 1,
+                "final_action": "BREAKOUT_EXPIRED",
+                "market_snapshot": self._snapshot_from_json(
+                    pending.market_snapshot_json,
+                    breakout_retest_status="expired",
+                ),
+            })
+            logger.info(
+                f"BREAKOUT_EXPIRED: {pending.signal.symbol} "
+                f"{pending.signal.signal_type} after {pending.bars_waited} bars"
+            )
+            return None, EntryTriggerCheck(False, "breakout_retest_expired"), None
+
+        return pending, EntryTriggerCheck(False, "breakout_retest_waiting"), None
 
     async def _process_pending_entries(self, symbol: str) -> None:
         pending_list = self._pending_entries.get(symbol)
@@ -677,19 +1007,37 @@ class TradingBrain:
 
         remaining: list[PendingEntry] = []
         for pending in active_entries:
-            if not self._entry_triggered(pending, one_min_result):
+            pending_atr = pending.atr
+            pending_snapshot = pending.market_snapshot_json
+            signal_to_execute = pending.signal
+            if pending.signal.strategy_name == "breakout":
+                pending, trigger_check, confirmed_signal = self._process_breakout_retest_entry(
+                    pending,
+                    one_min_result,
+                )
+                if confirmed_signal is not None:
+                    signal_to_execute = confirmed_signal
+                if pending is None and not trigger_check.triggered:
+                    continue
+            else:
+                trigger_check = self._entry_triggered(pending, one_min_result)
+            if not trigger_check.triggered:
+                logger.debug(
+                    f"1m 觸發未成立: {pending.signal.symbol} {pending.signal.signal_type} "
+                    f"{pending.signal.strategy_name} | {trigger_check.reason}"
+                )
                 remaining.append(pending)
                 continue
             trade_id = await self._run_risk_and_execute(
-                pending.signal,
+                signal_to_execute,
                 float(one_min_result.df_enriched["close"].iloc[-1]),
-                pending.atr,
-                pending.market_snapshot_json,
+                pending_atr,
+                pending_snapshot,
             )
             if trade_id:
                 logger.info(
-                    f"1m 觸發成功: {pending.signal.symbol} {pending.signal.signal_type} "
-                    f"{pending.signal.strategy_name}"
+                    f"1m 觸發成功: {signal_to_execute.symbol} {signal_to_execute.signal_type} "
+                    f"{signal_to_execute.strategy_name}"
                 )
             break
 
@@ -698,9 +1046,9 @@ class TradingBrain:
         else:
             self._pending_entries.pop(symbol, None)
 
-    def _entry_triggered(self, pending: PendingEntry, one_min_result) -> bool:
+    def _entry_triggered(self, pending: PendingEntry, one_min_result) -> EntryTriggerCheck:
         if one_min_result.df_enriched is None or one_min_result.df_enriched.empty:
-            return False
+            return EntryTriggerCheck(False, "1m data unavailable")
 
         curr = one_min_result.df_enriched.iloc[-1]
         close = float(curr.get("close", 0))
@@ -717,45 +1065,57 @@ class TradingBrain:
 
         if strategy == "trend_following":
             if direction == "LONG":
-                return (
-                    close > pending.trigger_high
-                    and high > pending.trigger_high
-                    and close > open_price
-                    and ema9 is not None
-                    and close > float(ema9)
-                    and rsi is not None
-                    and float(rsi) >= 52
-                )
-            return (
-                close < pending.trigger_low
-                and low < pending.trigger_low
-                and close < open_price
-                and ema9 is not None
-                and close < float(ema9)
-            )
+                checks = {
+                    "close_break_high": close > pending.trigger_high,
+                    "high_break_high": high > pending.trigger_high,
+                    "green_candle": close > open_price,
+                    "above_ema9": ema9 is not None and close > float(ema9),
+                    "rsi_ok": rsi is not None and float(rsi) >= 52,
+                }
+            else:
+                checks = {
+                    "close_break_low": close < pending.trigger_low,
+                    "low_break_low": low < pending.trigger_low,
+                    "red_candle": close < open_price,
+                    "below_ema9": ema9 is not None and close < float(ema9),
+                }
+            failed = [name for name, ok in checks.items() if not ok]
+            return EntryTriggerCheck(not failed, ", ".join(failed) if failed else "triggered")
 
         if strategy == "breakout":
             volume_ok = avg_volume > 0 and volume > avg_volume * 1.2
             if direction == "LONG":
-                return close > pending.trigger_high and close > open_price and volume_ok
-            return close < pending.trigger_low and close < open_price and volume_ok
+                checks = {
+                    "close_break_high": close > pending.trigger_high,
+                    "green_candle": close > open_price,
+                    "volume_ok": volume_ok,
+                }
+            else:
+                checks = {
+                    "close_break_low": close < pending.trigger_low,
+                    "red_candle": close < open_price,
+                    "volume_ok": volume_ok,
+                }
+            failed = [name for name, ok in checks.items() if not ok]
+            return EntryTriggerCheck(not failed, ", ".join(failed) if failed else "triggered")
 
         if strategy == "mean_reversion":
             if direction == "LONG":
-                return (
-                    close > pending.trigger_close
-                    and close > open_price
-                    and ema9 is not None
-                    and close > float(ema9)
-                )
-            return (
-                close < pending.trigger_close
-                and close < open_price
-                and ema9 is not None
-                and close < float(ema9)
-            )
+                checks = {
+                    "close_above_setup_close": close > pending.trigger_close,
+                    "green_candle": close > open_price,
+                    "above_ema9": ema9 is not None and close > float(ema9),
+                }
+            else:
+                checks = {
+                    "close_below_setup_close": close < pending.trigger_close,
+                    "red_candle": close < open_price,
+                    "below_ema9": ema9 is not None and close < float(ema9),
+                }
+            failed = [name for name, ok in checks.items() if not ok]
+            return EntryTriggerCheck(not failed, ", ".join(failed) if failed else "triggered")
 
-        return False
+        return EntryTriggerCheck(False, f"unsupported strategy: {strategy}")
 
     async def _run_risk_and_execute(
         self,
@@ -791,10 +1151,17 @@ class TradingBrain:
                 "veto_passed": 1,
                 "risk_passed": 1,
                 "final_action": "EXECUTED" if trade_id else "EXCHANGE_REJECTED",
-                "market_snapshot": market_snapshot_json,
+                "market_snapshot": self._snapshot_from_json(
+                    market_snapshot_json,
+                    effective_risk_pct=round(risk_result.effective_risk_pct, 6),
+                    sl_atr_mult=round(risk_result.sl_atr_mult, 4),
+                    structure_stop_floor_triggered=bool(
+                        risk_result.structure_stop_floor_triggered
+                    ),
+                ),
             })
             if not trade_id:
-                send_line_message(
+                    send_telegram_message(
                     f"❌ TradingBrain 交易所退單\n{sig.symbol} {sig.signal_type} | {sig.strategy_name}\n"
                     "原因: 請檢查日誌 (通常為保證金不足或槓桿過高)"
                 )
@@ -811,9 +1178,16 @@ class TradingBrain:
             "risk_passed": 0,
             "risk_reason": risk_result.reason,
             "final_action": "RISK_BLOCKED",
-            "market_snapshot": market_snapshot_json,
+            "market_snapshot": self._snapshot_from_json(
+                market_snapshot_json,
+                effective_risk_pct=round(risk_result.effective_risk_pct, 6),
+                sl_atr_mult=round(risk_result.sl_atr_mult, 4),
+                structure_stop_floor_triggered=bool(
+                    risk_result.structure_stop_floor_triggered
+                ),
+            ),
         })
-        send_line_message(
+        send_telegram_message(
             f"⚠️ TradingBrain 風控攔截\n{sig.symbol} {sig.signal_type} | {sig.strategy_name}\n"
             f"攔截原因: {risk_result.reason}"
         )
@@ -821,7 +1195,7 @@ class TradingBrain:
         return None
 
     async def _monitor_report(self) -> None:
-        """每 N 分鐘發一則監控快報到 LINE"""
+        """每 N 分鐘發一則監控快報到 Telegram"""
         trades_today = self.db.get_trades_today(tz=APP_TIMEZONE)
         daily_pnl = self.db.get_daily_pnl(tz=APP_TIMEZONE)
         open_trades = self.db.get_open_trades()
@@ -838,17 +1212,35 @@ class TradingBrain:
             f"時區: {APP_TIMEZONE_NAME}\n"
             f"今日損益: {daily_pnl:+.2f} U | 筆數: {len(trades_today)} | 未平倉: {len(open_trades)}"
             f"{balance_str}\n"
-            f"策略: V5 (趨勢 + 突破 + 均值回歸) | 日目標: 5-10%"
+            f"策略: V6 (趨勢 + Breakout Retest + 均值回歸) | 日目標: 5-10%"
         )
-        send_line_message(msg)
+        send_telegram_message(msg)
         logger.debug("監控快報已發送")
 
     async def _daily_report(self) -> None:
-        """生成每日績效報告並透過 LINE 發送"""
+        """生成每日績效報告並透過 Telegram 發送"""
         report_date = (datetime.now(APP_TIMEZONE).date() - pd.Timedelta(days=1)).isoformat()
         trades_today = self.db.get_trades_today(tz=APP_TIMEZONE, day_offset=-1)
         daily_pnl = self.db.get_daily_pnl(tz=APP_TIMEZONE, day_offset=-1)
         open_trades = self.db.get_open_trades()
+        exchange_balance = None
+        if self.binance_client:
+            try:
+                exchange_balance = round(await self.binance_client.get_balance(), 2)
+            except Exception:
+                exchange_balance = None
+
+        report_payload = {
+            "report_date": report_date,
+            "timezone": APP_TIMEZONE_NAME,
+            "mode": TRADING_MODE,
+            "trades_count": len(trades_today),
+            "daily_pnl": round(float(daily_pnl), 2),
+            "open_positions": len(open_trades),
+            "exchange_balance": exchange_balance,
+            "generated_at": datetime.now(APP_TIMEZONE).isoformat(),
+        }
+        self._append_daily_report_log(report_payload)
 
         report = (
             f"📊 TradingBrain 每日報告\n"
@@ -858,11 +1250,13 @@ class TradingBrain:
             f"未平倉位: {len(open_trades)} 個\n"
             f"模式: {TRADING_MODE}"
         )
+        if exchange_balance is not None:
+            report += f"\n交易所餘額: {exchange_balance:.2f} U"
         logger.info(report)
-        send_line_message(report)
+        send_telegram_message(report)
 
     async def _heartbeat(self) -> None:
-        """心跳檢查（靜默）：僅在異常時發送 LINE 告警"""
+        """心跳檢查（靜默）：僅在異常時發送 Telegram 告警"""
         # 超過 5 分鐘未收到 K 線視為異常
         stale = (time.time() - self.last_kline_received_at) > 300
         if stale and self.last_kline_received_at > 0:
@@ -871,7 +1265,7 @@ class TradingBrain:
                 "請檢查 WebSocket 連線或網路。"
             )
             logger.warning(msg)
-            send_line_message(msg)
+            send_telegram_message(msg)
 
     async def _position_check(self) -> None:
         """持倉止損/止盈檢查：從快取或 REST 取價，觸及則平倉"""

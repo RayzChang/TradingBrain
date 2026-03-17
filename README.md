@@ -1,213 +1,128 @@
-<div align="center">
+# TradingBrain V6
 
-# 🧠 TradingBrain V5
+TradingBrain V6 is a Binance Futures trading system for demo/testnet research. It combines a Python backend, FastAPI dashboard, React frontend, Telegram notifications, SQLite logging, and a phased strategy/risk framework focused on replayable analysis rather than black-box execution.
 
-### _Cyberpunk Edition_
+## Current State
 
-**加密貨幣 AI 自動交易系統**
+- Runtime mode: testnet/demo-first
+- Strategy stack:
+  - `trend_following`
+  - `breakout_retest`
+  - `mean_reversion`
+- Market model:
+  - `4h` trend direction
+  - `1h` direction filter
+  - `15m` setup generation
+  - `1m` entry trigger / breakout retest confirm
+- Notifications: Telegram
+- Research logging: enabled
+- Progress tracker: [`PROGRESS.md`](./PROGRESS.md)
 
-> 市場狀態自適應策略 × 多時間框架分析 × 智慧風控 × Cyberpunk UI
->
-> **30 天回測：5,000U → 13,053U (+161%)，日均 +5.37%**
+## What's New In V6
 
----
+- Completed the six-phase refactor plan tracked in [`PROGRESS.md`](./PROGRESS.md)
+- Added stricter multi-timeframe hard gates
+- Rebuilt breakout entries around retest confirmation
+- Split exit templates by strategy family
+- Added strategy-weighted position sizing
+- Added structure-stop ATR floor protection
+- Added correlation blocking for BTC / ETH same-direction exposure
+- Expanded daily and per-signal research logging for later review
 
-![](https://img.shields.io/badge/版本-v4.0-blueviolet?style=for-the-badge)
-![](https://img.shields.io/badge/引擎-Python_3.11-blue?style=for-the-badge)
-![](https://img.shields.io/badge/前端-React_+_Vite-cyan?style=for-the-badge)
-![](https://img.shields.io/badge/交易所-Binance_Futures-yellow?style=for-the-badge)
+## Strategy Overview
 
-</div>
+### 1. Trend Following
 
----
+- Runs only in `TRENDING` regime
+- Uses EMA structure, ADX/DI context, RSI, MACD, and entry quality filters
+- Now blocks late trend entries that are too extended near Bollinger extremes
 
-## ⚡ v4 新功能
+### 2. Breakout Retest
 
-| 功能 | 說明 |
-|------|------|
-| 🎨 **Cyberpunk UI** | 霓虹紫藍 Glassmorphism 設計、掃描線動畫、即時 K 線蠟燭圖 |
-| 📊 **專業 K 線圖** | EMA7/25/99、布林通道、MACD、RSI 指標切換，1 秒即時更新 |
-| 🔍 **選幣器** | 20 幣種 24h 行情總覽、漲跌排序、點擊即時預覽 K 線 |
-| 🧠 **決策管道** | 即時視覺化信號通過/否決狀態 |
-| 📱 **LINE 通知** | 啟動通知 + 開單/平倉 + 每日績效報告 |
+- Detects a valid `15m` breakout setup
+- Queues a pending breakout instead of entering immediately
+- Waits for `1m` retest confirmation
+- Uses a wider breakout breathing room and breakout-specific exit profile
 
----
+### 3. Mean Reversion
 
-## 系統架構
+- Runs only in `RANGING` regime
+- Uses RSI / Bollinger context with reversal confirmation
+- Uses a shorter exit profile with faster partial profit-taking
 
-```
-K 線數據 (WebSocket 15m/1h/4h)
-       ↓
-  技術分析引擎 → 指標 + 斐波那契 + K線型態 + 背離 + MTF
-       ↓
-  市場狀態偵測 (ADX ≥ 20 = 趨勢 / ADX < 20 = 震盪)
-       ↓
-  ┌─ 趨勢狀態 → 趨勢追蹤策略 + 突破策略
-  └─ 震盪狀態 → 均值回歸策略
-       ↓
-  MTF 方向過濾（信號必須與大時間框架趨勢一致）
-       ↓
-  衝突解決 + 同標的冷卻（2 小時）
-       ↓
-  否決引擎（恐懼貪婪指數、資金費率、爆倉偵測、絞肉機偵測）
-       ↓
-  風控（3% 風險 / 5x 槓桿 / SL=1.5ATR / TP=4ATR）
-       ↓
-  部分止盈 50% @ 2ATR → trailing stop 1.5%
-       ↓
-  幣安合約 API 執行下單
-       ↓
-  LINE 即時通知 + Cyberpunk Web 儀表板
-```
+## Risk Model
 
----
+- Strategy-specific exit templates
+- Structure-first stop placement with ATR floor protection
+- Strategy-weighted risk sizing:
+  - `breakout / breakout_retest = 1.0`
+  - `trend_following = 0.8`
+  - `mean_reversion = 0.7`
+- Signal strength multiplier with cap
+- Simplified correlation protection:
+  - blocks same-direction `BTCUSDT` + `ETHUSDT`
 
-## 三大策略
+## Notifications And Reporting
 
-| 策略 | 適用市場 | 進場邏輯 | 30天回測 |
-|------|----------|----------|----------|
-| **趨勢追蹤** | ADX ≥ 20 | EMA 交叉 + ADX + K線型態 + 斐波那契 + 背離 | 124筆, 50.8% WR, +3,452U |
-| **突破** | ADX ≥ 20 | 布林帶突破 + 量增 1.5x + ADX 連升 + MACD | 126筆, 55.6% WR, +4,601U |
-| **均值回歸** | ADX < 20 | BB上下軌 + RSI 超買超賣 + K線反轉 | 市場自適應切換 |
+- Startup, trade, TP/SL, hourly summaries, and daily reports go to Telegram
+- Daily reports are written to:
+  - `logs/daily_reports`
+- Agent research reports are written to:
+  - `logs/daily_reports/agent_reports`
 
----
+## Project Structure
 
-## 回測成績（30 天 / 10 幣種）
+- [`main.py`](./main.py): runtime orchestration
+- [`core/analysis`](./core/analysis): indicators, MTF analysis
+- [`core/strategy`](./core/strategy): strategy logic and signal aggregation
+- [`core/risk`](./core/risk): sizing, stop logic, exit profiles
+- [`core/execution`](./core/execution): Binance client and position management
+- [`api`](./api): FastAPI routes
+- [`frontend`](./frontend): React + Vite dashboard
+- [`database`](./database): SQLite models and DB helpers
+- [`notifications`](./notifications): Telegram notification layer
+- [`scripts`](./scripts): validation and support scripts
 
-| 指標 | 數值 |
-|------|------|
-| 初始 → 最終 | 5,000U → 13,053U |
-| ROI | **+161%** |
-| 日均 ROI | **+5.37%** |
-| 總交易 | 250 筆 |
-| 勝率 | 53.2% |
-| 獲利因子 | 1.34 |
-| 最大回撤 | 31.8% |
+## Quick Start
 
----
-
-## 快速開始
-
-### 1. 環境建置
+### Backend
 
 ```bash
 python -m venv venv
-venv\Scripts\activate        # Windows
+venv\Scripts\activate
 pip install -r requirements.txt
+python main.py
 ```
 
-### 2. 前端安裝（首次）
+### Frontend
 
 ```bash
 cd frontend
 npm install
 npm run build
-cd ..
 ```
 
-### 3. 啟動控制台
+### Launcher
 
 ```bash
 python launcher.py
 ```
 
-瀏覽器自動開啟 `http://localhost:8899`，點擊**啟動**按鈕即可。
+## Key URLs
 
-| 介面 | 網址 | 說明 |
-|------|------|------|
-| 控制台 | `localhost:8899` | 啟動/停止交易大腦 |
-| 儀表板 | `localhost:8888` | Cyberpunk 即時儀表板（帳號 admin / changeme） |
+- Dashboard API: `http://localhost:8888`
+- Launcher UI: `http://localhost:8899`
 
----
+## Validation
 
-## 風控機制
+Recent project-wide validation target:
 
-| 參數 | 值 | 說明 |
-|------|-----|------|
-| 每單風險 | 3% | 最多虧 150U/單（5000U 本金） |
-| 最大槓桿 | 5x | 放大但不瘋狂 |
-| 止損 | 1.5 ATR | 給足空間不被洗出 |
-| 止盈 | 4.0 ATR | 讓利潤跑遠 |
-| 部分止盈 | 2.0 ATR | 50% 先落袋 |
-| Trailing | 1.5% | 剩 50% 跟蹤最高價 |
-| 每日停損 | 6% | 虧 300U 即停 |
-| 最大持倉 | 3 | 分散風險 |
-
----
-
-## 專案結構
-
-```
-├── launcher.py                  # ⭐ 控制台啟動器
-├── main.py                      # 交易引擎入口
-├── config/                      # 設定檔
-├── core/
-│   ├── analysis/                # 技術分析引擎（RSI, MACD, BB, ADX, ATR, EMA...）
-│   ├── strategy/                # 交易策略（趨勢/突破/均值回歸）
-│   ├── execution/               # 幣安合約 API 客戶端 + 持倉管理
-│   ├── risk/                    # 風險管理
-│   ├── pipeline/                # 資訊管線（資金費率、恐懼貪婪、爆倉）
-│   └── brain/                   # 大腦狀態管理
-├── api/                         # FastAPI 後端
-│   └── routes/                  # API 路由（K線、信號、交易、風控）
-├── frontend/                    # React + Vite Cyberpunk 儀表板
-│   └── src/
-│       ├── components/          # Sidebar、KlineChart、StatCard、DecisionPipeline
-│       └── pages/               # Dashboard、Market、Screener、Signals、Trades
-├── notifications/               # LINE 推送
-├── database/                    # SQLite 資料庫
-└── scripts/                     # 回測腳本
+```bash
+python -m pytest -q
 ```
 
----
+## Notes
 
-## LINE 通知設定
-
-1. [LINE Developers](https://developers.line.biz/) 建立 Messaging API Channel
-2. 取得 **Channel Access Token** → 填入 `.env` 的 `LINE_CHANNEL_ACCESS_TOKEN`
-3. 取得你的 **User ID** → 填入 `LINE_USER_ID`
-
-通知內容：🚀 啟動通知 · 📊 監控快報 · 📋 每日績效
-
----
-
-## 版本歷史
-
-### v4.0 — Cyberpunk UI 大升級 (2026-03-05)
-- 全新 Cyberpunk Glassmorphism 前端（霓虹紫藍、掃描線、毛玻璃卡片）
-- 專業 K 線蠟燭圖 + EMA/BOLL/MACD/RSI 指標
-- 選幣器（20 幣種 24h 行情 + K 線預覽）
-- 決策管道即時視覺化
-- 1 秒即時更新 K 線
-- 自訂幣種搜尋 + 6 時間框架
-
-### v3.2 — 決策日誌 + 幣種擴充 (2026-03-04)
-- 決策日誌系統（覆盤用完整決策鏈記錄）
-- Watchlist 10 → 20 幣種
-- K 線快取 200 → 500 根
-
-### v3.1 — 健康檢查修復 (2026-03-04)
-- 風控設定保護、DB 實例統一、API Rate Limit 保護
-- 連線池、線程安全、前端動態 hostname
-
-### v3.0 — 策略重大升級 (2026-02-27)
-- 市場狀態自適應（ADX 趨勢/震盪切換）
-- 突破策略 + 部分止盈 + Trailing Stop + MTF 過濾
-- 控制台啟動器 (`python launcher.py`)
-
----
-
-## ⚠️ 安全提醒
-
-- **不要把 `.env` 上傳到 Git**（已在 .gitignore 中）
-- **API Key 只開合約交易權限，不開提幣**
-- **先用 Demo/Testnet 測試至少 1-2 週再考慮實盤**
-- **回測 ≠ 實盤，過去表現不代表未來**
-
----
-
-<div align="center">
-
-**Made with � by TradingBrain v4 — Cyberpunk Edition**
-
-</div>
+- This repo is optimized for demo/testnet iteration first.
+- Real-money usage should only happen after extended validation.
+- Runtime logs and databases are intentionally excluded from version control.

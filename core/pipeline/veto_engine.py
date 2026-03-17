@@ -85,13 +85,22 @@ class VetoEngine:
         if active:
             logger.warning(f"Chop market veto activated until {until}")
 
-    def evaluate(self, symbol: str, direction: str) -> VetoResult:
+    def evaluate(
+        self,
+        symbol: str,
+        direction: str,
+        *,
+        market_regime: str | None = None,
+        regime_details: dict | None = None,
+    ) -> VetoResult:
         """
         評估交易信號是否應被否決。
 
         Args:
             symbol: 交易對 (e.g. "BTCUSDT")
             direction: 交易方向 ("LONG" or "SHORT")
+            market_regime: 當前市場狀態（可選）
+            regime_details: regime 判定細節（可選）
 
         Returns:
             VetoResult with passed/vetoed status and reasons
@@ -103,6 +112,13 @@ class VetoEngine:
         # 大腦覆寫 或 Testnet 設定：放寬否決時僅保留爆倉/絞肉機
         brain = brain_get_overrides()
         skip_fg_funding = brain.get("relax_veto") is True or (BINANCE_TESTNET and RELAX_VETO_ON_TESTNET)
+
+        # === 0. 高波動狀態檢查 ===
+        if market_regime == "volatile":
+            details["market_regime"] = market_regime
+            if regime_details:
+                details["regime_details"] = regime_details
+            reasons.append("市場狀態為 volatile，暫停新開倉")
 
         # === 1. 恐懼貪婪指數檢查 ===
         if not skip_fg_funding:

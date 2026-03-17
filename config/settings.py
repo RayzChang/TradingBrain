@@ -25,9 +25,9 @@ BINANCE_WS_URL = BINANCE_TESTNET_WS if BINANCE_TESTNET else BINANCE_LIVE_WS
 RELAX_VETO_ON_TESTNET = os.getenv("RELAX_VETO_ON_TESTNET", "true").lower() == "true"
 
 
-# === LINE Messaging API ===
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
-LINE_USER_ID = os.getenv("LINE_USER_ID", "").strip()
+# === Telegram Bot API ===
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 
 # === Web Dashboard ===

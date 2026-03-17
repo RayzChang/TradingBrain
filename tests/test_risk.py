@@ -9,12 +9,18 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.risk.position_sizer import PositionSizer, PositionSizeResult, _parse_max_open_positions
 from core.risk.stop_loss import StopLossCalculator, StopLossResult
-from core.risk.structure_levels import compute_structure_levels
+from core.risk.exit_profiles import get_exit_profile, normalize_strategy_family
+from core.risk.structure_levels import (
+    StructureLevels,
+    compute_structure_levels,
+    get_structure_stop_floor_mult,
+)
 from core.risk.daily_limits import DailyLimitsChecker, DailyLimitsResult
 from core.risk.cooldown import CooldownChecker, CooldownResult
 from core.risk.risk_manager import RiskManager, RiskCheckResult
@@ -84,6 +90,58 @@ def test_position_sizer_prefers_structure_stop_distance():
     print("  [PASS]")
 
 
+def test_position_sizer_applies_strategy_weight_and_signal_strength():
+    print("\n=== 測試 position sizing 套用策略權重與信號強度 ===")
+    sizer = PositionSizer(db=None)
+    breakout = sizer.compute(
+        balance=1000,
+        entry_price=100,
+        atr=2.0,
+        direction="LONG",
+        strategy_name="breakout_retest",
+        signal_strength=1.0,
+        stop_loss_price=96.0,
+    )
+    trend = sizer.compute(
+        balance=1000,
+        entry_price=100,
+        atr=2.0,
+        direction="LONG",
+        strategy_name="trend_following",
+        signal_strength=1.0,
+        stop_loss_price=96.0,
+    )
+    mean_rev = sizer.compute(
+        balance=1000,
+        entry_price=100,
+        atr=2.0,
+        direction="LONG",
+        strategy_name="mean_reversion",
+        signal_strength=1.0,
+        stop_loss_price=96.0,
+    )
+    boosted = sizer.compute(
+        balance=1000,
+        entry_price=100,
+        atr=2.0,
+        direction="LONG",
+        strategy_name="breakout",
+        signal_strength=2.0,
+        stop_loss_price=96.0,
+    )
+    assert breakout.rejected is False
+    assert trend.rejected is False
+    assert mean_rev.rejected is False
+    assert boosted.rejected is False
+    assert breakout.effective_risk_pct == 0.02
+    assert trend.effective_risk_pct == 0.016
+    assert mean_rev.effective_risk_pct == 0.014
+    assert boosted.effective_risk_pct == 0.026
+    assert breakout.size_usdt > trend.size_usdt > mean_rev.size_usdt
+    assert boosted.size_usdt > breakout.size_usdt
+    print("  [PASS]")
+
+
 def test_stop_loss_calculator():
     print("\n=== 測試止損止盈計算 ===")
     calc = StopLossCalculator(db=None)
@@ -117,6 +175,35 @@ def test_stop_loss_calculator_mean_reversion_profile():
     print("  [PASS]")
 
 
+def test_stop_loss_calculator_breakout_and_trend_profiles_differ():
+    print("\n=== 測試 breakout / trend_following 出場模板拆分 ===")
+    calc = StopLossCalculator(db=None)
+    breakout = calc.compute(
+        entry_price=100,
+        atr=2,
+        direction="LONG",
+        strategy_name="breakout_retest",
+    )
+    trend = calc.compute(
+        entry_price=100,
+        atr=2,
+        direction="LONG",
+        strategy_name="trend_following",
+    )
+    assert breakout.rejected is False
+    assert trend.rejected is False
+    assert breakout.stop_loss == 96.0
+    assert trend.stop_loss == 97.0
+    assert breakout.tp1 == 103.0
+    assert breakout.tp2 == 106.0
+    assert breakout.tp3 == 109.0
+    assert trend.tp1 == 104.0
+    assert trend.tp2 == 107.0
+    assert trend.tp3 == 110.0
+    assert breakout.tp3 < trend.tp3
+    print("  [PASS]")
+
+
 def test_structure_levels_long():
     print("\n=== 測試結構型出場層級 ===")
     df = pd.DataFrame(
@@ -132,6 +219,25 @@ def test_structure_levels_long():
     assert levels.stop_loss < 106
     assert levels.tp1 is not None
     assert levels.tp1 > 106
+    print("  [PASS]")
+
+
+def test_structure_stop_floor_mult_mapping() -> None:
+    print("\n=== 測試結構止損 ATR floor 對應 ===")
+    assert get_structure_stop_floor_mult("breakout") == 2.0
+    assert get_structure_stop_floor_mult("breakout_retest") == 2.0
+    assert get_structure_stop_floor_mult("trend_following") == 1.2
+    assert get_structure_stop_floor_mult("mean_reversion") == 0.8
+    assert get_structure_stop_floor_mult("other") is None
+    print("  [PASS]")
+
+
+def test_exit_profile_family_mapping() -> None:
+    print("\n=== 測試 exit profile strategy family 對應 ===")
+    assert normalize_strategy_family("breakout_retest") == "breakout"
+    assert get_exit_profile("breakout_retest").family == "breakout"
+    assert get_exit_profile("trend_following").family == "trend_following"
+    assert get_exit_profile("mean_reversion").tp2_final_exit is True
     print("  [PASS]")
 
 
@@ -281,6 +387,90 @@ def test_stop_loss_calculator_uses_structure_when_available():
     print("  [PASS]")
 
 
+def test_stop_loss_calculator_applies_structure_floor_for_breakout_long(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    print("\n=== 測試 breakout 結構止損套用最小 ATR floor ===")
+    calc = StopLossCalculator(db=None)
+    monkeypatch.setattr(
+        "core.risk.stop_loss.compute_structure_levels",
+        lambda *args, **kwargs: StructureLevels(
+            stop_loss=1.3210,
+            tp1=1.3351,
+            tp2=1.3531,
+            tp3=1.3730,
+            source="structure",
+        ),
+    )
+    df = pd.DataFrame({"open": [1.32], "high": [1.324], "low": [1.318], "close": [1.323]})
+    result = calc.compute(
+        entry_price=1.323,
+        atr=0.0088,
+        direction="LONG",
+        symbol="NEARUSDT",
+        strategy_name="breakout",
+        structure_df=df,
+        min_risk_reward=1.4,
+    )
+    expected_floor = round(1.323 - (2.0 * 0.0088), 4)
+    assert result.rejected is False
+    assert result.stop_loss == expected_floor
+    assert result.sl_atr_mult == 2.0
+    assert result.structure_stop_floor_triggered is True
+    print("  [PASS]")
+
+
+def test_stop_loss_calculator_applies_structure_floor_for_breakout_short(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    print("\n=== 測試 breakout SHORT 結構止損套用最小 ATR floor ===")
+    calc = StopLossCalculator(db=None)
+    monkeypatch.setattr(
+        "core.risk.stop_loss.compute_structure_levels",
+        lambda *args, **kwargs: StructureLevels(
+            stop_loss=100.5,
+            tp1=98.0,
+            tp2=97.0,
+            tp3=96.0,
+            source="structure",
+        ),
+    )
+    df = pd.DataFrame({"open": [99.0], "high": [100.0], "low": [98.0], "close": [98.5]})
+    result = calc.compute(
+        entry_price=99.0,
+        atr=2.0,
+        direction="SHORT",
+        symbol="BTCUSDT",
+        strategy_name="breakout",
+        structure_df=df,
+        min_risk_reward=0.7,
+    )
+    expected_floor = round(99.0 + (2.0 * 2.0), 4)
+    assert result.rejected is False
+    assert result.stop_loss == expected_floor
+    assert result.sl_atr_mult == 2.0
+    assert result.structure_stop_floor_triggered is True
+    print("  [PASS]")
+
+
+def test_stop_loss_calculator_atr_fallback_unchanged_without_structure() -> None:
+    print("\n=== 測試 ATR fallback 路徑不受 structure floor 影響 ===")
+    calc = StopLossCalculator(db=None)
+    result = calc.compute(
+        entry_price=100,
+        atr=2,
+        direction="LONG",
+        symbol="BTCUSDT",
+        strategy_name="breakout",
+        structure_df=None,
+    )
+    assert result.rejected is False
+    assert result.stop_loss == 96.0
+    assert result.sl_atr_mult == 2.0
+    assert result.structure_stop_floor_triggered is False
+    print("  [PASS]")
+
+
 def main():
     print("=" * 60)
     print("TradingBrain Phase 5 - 風險管理核心測試")
@@ -288,10 +478,17 @@ def main():
     test_parse_max_open_positions()
     test_position_sizer()
     test_position_sizer_prefers_structure_stop_distance()
+    test_position_sizer_applies_strategy_weight_and_signal_strength()
     test_stop_loss_calculator()
     test_stop_loss_calculator_mean_reversion_profile()
+    test_stop_loss_calculator_breakout_and_trend_profiles_differ()
     test_structure_levels_long()
+    test_structure_stop_floor_mult_mapping()
+    test_exit_profile_family_mapping()
     test_stop_loss_calculator_uses_structure_when_available()
+    test_stop_loss_calculator_applies_structure_floor_for_breakout_long()
+    test_stop_loss_calculator_applies_structure_floor_for_breakout_short()
+    test_stop_loss_calculator_atr_fallback_unchanged_without_structure()
     test_daily_limits_checker()
     test_cooldown_checker()
     test_risk_manager_integration()
