@@ -142,8 +142,10 @@ class TrendFollowingStrategy(BaseStrategy):
         bearish_confluence = int(candle_bonus.get("bearish", 0) > 0) + int(
             fib_info.get("near_resistance", False)
         ) + int(divergence_bonus.get("bearish", False))
+        bullish_cross_age = self._get_cross_age_bars(df, bullish=True)
+        bearish_cross_age = self._get_cross_age_bars(df, bullish=False)
 
-        if ema9_prev <= ema21_prev and ema9_curr > ema21_curr:
+        if ema9_curr > ema21_curr and bullish_cross_age is not None and bullish_cross_age <= 5:
             bullish_stack_ok = True
             bullish_di_ok = True
             bullish_momentum_ok = True
@@ -155,7 +157,6 @@ class TrendFollowingStrategy(BaseStrategy):
                     adx_pos_curr,
                     adx_neg_curr,
                     close_curr,
-                    prev_high,
                     rsi_curr,
                     macd_hist_curr,
                     macd_hist_prev,
@@ -179,7 +180,6 @@ class TrendFollowingStrategy(BaseStrategy):
                         self.long_rsi_floor <= rsi_curr <= self.long_rsi_ceiling
                         and macd_hist_curr > 0
                         and macd_hist_curr >= macd_hist_prev
-                        and close_curr > prev_high
                     )
 
             if (
@@ -195,7 +195,6 @@ class TrendFollowingStrategy(BaseStrategy):
                 )
                 return signals
 
-            bullish_cross_age = self._get_cross_age_bars(df, bullish=True)
             if bb_position is not None and bb_position > self.long_bb_position_ceiling:
                 self._log_entry_quality_filter(
                     symbol,
@@ -236,6 +235,13 @@ class TrendFollowingStrategy(BaseStrategy):
                 strength = max(strength - 0.15, 0.0)
 
             if strength >= 0.3:
+                breakout_momentum_bonus = (
+                    prev_high is not None
+                    and not (isinstance(prev_high, float) and pd.isna(prev_high))
+                    and close_curr > prev_high
+                )
+                if breakout_momentum_bonus:
+                    strength = min(strength + 0.1, 1.0)
                 signals.append(
                     TradeSignal(
                         symbol=symbol,
@@ -255,6 +261,7 @@ class TrendFollowingStrategy(BaseStrategy):
                             "macd_hist": round(float(macd_hist_curr), 4) if macd_hist_curr is not None else None,
                             "bb_position": round(float(bb_position), 4) if bb_position is not None else None,
                             "cross_age_bars": bullish_cross_age,
+                            "breakout_momentum_bonus": breakout_momentum_bonus,
                             "entry_quality_filter_triggered": False,
                             "bullish_stack_ok": bullish_stack_ok,
                             "bullish_momentum_ok": bullish_momentum_ok,
@@ -270,7 +277,7 @@ class TrendFollowingStrategy(BaseStrategy):
                 )
                 logger.debug(f"{self.name} LONG signal: {symbol} {timeframe} ADX={adx:.1f} strength={strength:.2f}")
 
-        if ema9_prev >= ema21_prev and ema9_curr < ema21_curr:
+        if ema9_curr < ema21_curr and bearish_cross_age is not None and bearish_cross_age <= 5:
             bearish_stack_values = (
                 ema50_prev,
                 ema50_curr,
@@ -315,7 +322,6 @@ class TrendFollowingStrategy(BaseStrategy):
                 )
                 return signals
 
-            bearish_cross_age = self._get_cross_age_bars(df, bullish=False)
             if bb_position is not None and bb_position < self.short_bb_position_floor:
                 self._log_entry_quality_filter(
                     symbol,

@@ -453,6 +453,38 @@ def test_stop_loss_calculator_applies_structure_floor_for_breakout_short(
     print("  [PASS]")
 
 
+def test_stop_loss_calculator_prefers_atr_tp_when_structure_tp_is_too_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    print("\n=== 測試 structure TP 過近時保留 ATR TP ===")
+    calc = StopLossCalculator(db=None)
+    monkeypatch.setattr(
+        "core.risk.stop_loss.compute_structure_levels",
+        lambda *args, **kwargs: StructureLevels(
+            stop_loss=95.0,
+            tp1=100.8,
+            tp2=101.0,
+            tp3=101.2,
+            source="structure",
+        ),
+    )
+    df = pd.DataFrame({"open": [99.0], "high": [101.0], "low": [98.0], "close": [100.0]})
+    result = calc.compute(
+        entry_price=100.0,
+        atr=2.0,
+        direction="LONG",
+        symbol="BTCUSDT",
+        strategy_name="breakout_retest",
+        structure_df=df,
+    )
+    assert result.rejected is False
+    assert result.tp1 == 103.0
+    assert result.tp2 == 106.0
+    assert result.tp3 == 109.0
+    assert result.take_profit == 109.0
+    print("  [PASS]")
+
+
 def test_stop_loss_calculator_atr_fallback_unchanged_without_structure() -> None:
     print("\n=== 測試 ATR fallback 路徑不受 structure floor 影響 ===")
     calc = StopLossCalculator(db=None)

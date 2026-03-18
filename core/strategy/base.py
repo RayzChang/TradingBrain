@@ -482,24 +482,26 @@ class BaseStrategy(ABC):
         direction_4h = mtf_details.get("4h")
         direction_1h = mtf_details.get("1h")
         valid_directions = {"BULLISH", "BEARISH"}
+        is_ranging_only = self.allowed_regimes == [MarketRegime.RANGING]
 
-        if direction_4h not in valid_directions:
-            logger.info(
-                f"MTF_GATE_BLOCK: {full.symbol} 4h direction invalid ({direction_4h or 'missing'})"
-            )
-            return []
+        if not is_ranging_only:
+            if direction_4h not in valid_directions:
+                logger.info(
+                    f"MTF_GATE_BLOCK: {full.symbol} 4h direction invalid ({direction_4h or 'missing'})"
+                )
+                return []
 
-        if direction_1h not in valid_directions:
-            logger.info(
-                f"MTF_GATE_BLOCK: {full.symbol} 1h direction invalid ({direction_1h or 'missing'})"
-            )
-            return []
+            if direction_1h not in valid_directions:
+                logger.info(
+                    f"MTF_GATE_BLOCK: {full.symbol} 1h direction invalid ({direction_1h or 'missing'})"
+                )
+                return []
 
-        if direction_1h != direction_4h:
-            logger.info(
-                f"MTF_GATE_BLOCK: {full.symbol} 1h {direction_1h} != 4h {direction_4h}"
-            )
-            return []
+            if direction_1h != direction_4h:
+                logger.info(
+                    f"MTF_GATE_BLOCK: {full.symbol} 1h {direction_1h} != 4h {direction_4h}"
+                )
+                return []
 
         # --- MTF 方向過濾 ---
         mtf_direction = None
@@ -508,7 +510,7 @@ class BaseStrategy(ABC):
             mtf_direction = full.mtf.recommended_direction
             mtf_confidence = full.mtf.confidence
 
-        if mtf_direction is None:
+        if mtf_direction is None and not is_ranging_only:
             logger.info(
                 f"MTF_GATE_BLOCK: {full.symbol} recommended_direction unavailable"
             )
@@ -519,7 +521,7 @@ class BaseStrategy(ABC):
         filtered: list[TradeSignal] = []
         for sig in signals:
             # MTF 方向不一致 → 過濾
-            if mtf_direction is not None and sig.signal_type != mtf_direction:
+            if (not is_ranging_only) and mtf_direction is not None and sig.signal_type != mtf_direction:
                 logger.debug(
                     f"MTF 過濾: {sig.symbol} {sig.signal_type} "
                     f"(MTF={mtf_direction}, conf={mtf_confidence:.0%})"
@@ -534,7 +536,7 @@ class BaseStrategy(ABC):
                 continue
 
             # MTF 一致 → 加分
-            if mtf_direction == sig.signal_type and mtf_confidence > 0.5:
+            if (not is_ranging_only) and mtf_direction == sig.signal_type and mtf_confidence > 0.5:
                 sig.strength = min(sig.strength + 0.1, 1.0)
                 sig.indicators["mtf_aligned"] = True
                 sig.indicators["mtf_confidence"] = mtf_confidence

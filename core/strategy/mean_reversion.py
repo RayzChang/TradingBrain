@@ -19,8 +19,8 @@ class MeanReversionStrategy(BaseStrategy):
         rsi_overbought: float = 70.0,
         bb_touch_threshold: float = 0.02,
         skip_on_chop: bool = True,
-        short_rsi_floor: float = 74.0,
-        long_rsi_ceiling: float = 26.0,
+        short_rsi_floor: float = 65.0,
+        long_rsi_ceiling: float = 35.0,
     ) -> None:
         self.rsi_oversold = rsi_oversold
         self.rsi_overbought = rsi_overbought
@@ -64,7 +64,6 @@ class MeanReversionStrategy(BaseStrategy):
         open_price = curr.get("open")
         bb_lower = curr.get("bb_lower")
         bb_upper = curr.get("bb_upper")
-        ema21 = curr.get("ema_21")
         prev_close = prev.get("close")
 
         if close is None or close <= 0 or open_price is None or prev_close is None:
@@ -86,7 +85,6 @@ class MeanReversionStrategy(BaseStrategy):
             bullish_reversal = bool(
                 close > open_price
                 and close >= prev_close
-                and (ema21 is None or pd.isna(ema21) or close >= ema21)
             )
             if dist_lower <= self.bb_touch_threshold and rsi_f <= self.long_rsi_ceiling:
                 strength = 0.5 + (self.rsi_oversold - rsi_f) / 40.0
@@ -132,7 +130,6 @@ class MeanReversionStrategy(BaseStrategy):
             bearish_reversal = bool(
                 close < open_price
                 and close <= prev_close
-                and (ema21 is None or pd.isna(ema21) or close <= ema21)
             )
             if dist_upper <= self.bb_touch_threshold and rsi_f >= self.short_rsi_floor:
                 strength = 0.5 + (rsi_f - self.rsi_overbought) / 40.0

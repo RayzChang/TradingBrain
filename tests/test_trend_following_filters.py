@@ -75,6 +75,47 @@ def test_trend_following_long_survives_when_stack_is_confirmed() -> None:
     assert signals[0].indicators["bullish_stack_ok"] is True
 
 
+def test_trend_following_long_allows_recent_cross_not_only_current_bar() -> None:
+    df = pd.DataFrame(
+        [
+            {"high": 99, "close": 98, "ema_9": 97, "ema_21": 99, "ema_50": 95, "adx": 27, "adx_pos": 23, "adx_neg": 19, "rsi": 55, "macd_hist": 0.20},
+            {"high": 100, "close": 99.5, "ema_9": 99.5, "ema_21": 99.8, "ema_50": 95.5, "adx": 28, "adx_pos": 24, "adx_neg": 18, "rsi": 56, "macd_hist": 0.24},
+            {"high": 101, "close": 100.8, "ema_9": 101.1, "ema_21": 100.0, "ema_50": 96.0, "adx": 29, "adx_pos": 26, "adx_neg": 17, "rsi": 58, "macd_hist": 0.30},
+            {"high": 101.2, "close": 100.9, "ema_9": 101.3, "ema_21": 100.2, "ema_50": 96.4, "adx": 30, "adx_pos": 27, "adx_neg": 16, "rsi": 59, "macd_hist": 0.34},
+        ]
+    )
+    strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)
+
+    signals = strategy.evaluate_single(
+        "BTCUSDT",
+        "15m",
+        _make_result(df, [_DummyPattern(PatternDirection.BULLISH)]),
+    )
+
+    assert len(signals) == 1
+    assert signals[0].indicators["cross_age_bars"] == 1
+
+
+def test_trend_following_long_no_longer_requires_prev_high_break() -> None:
+    df = pd.DataFrame(
+        [
+            {"high": 99, "close": 98, "ema_9": 97, "ema_21": 99, "ema_50": 95, "adx": 27, "adx_pos": 23, "adx_neg": 19, "rsi": 55, "macd_hist": 0.2},
+            {"high": 101, "close": 100, "ema_9": 99, "ema_21": 100, "ema_50": 96, "adx": 28, "adx_pos": 24, "adx_neg": 18, "rsi": 57, "macd_hist": 0.25},
+            {"high": 105, "close": 100.8, "ema_9": 102, "ema_21": 101, "ema_50": 97, "adx": 30, "adx_pos": 28, "adx_neg": 16, "rsi": 60, "macd_hist": 0.35},
+        ]
+    )
+    strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)
+
+    signals = strategy.evaluate_single(
+        "BTCUSDT",
+        "15m",
+        _make_result(df, [_DummyPattern(PatternDirection.BULLISH)]),
+    )
+
+    assert len(signals) == 1
+    assert bool(signals[0].indicators["breakout_momentum_bonus"]) is False
+
+
 def test_trend_following_long_requires_momentum_confirmation() -> None:
     df = pd.DataFrame(
         [

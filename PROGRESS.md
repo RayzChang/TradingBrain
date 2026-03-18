@@ -1,5 +1,29 @@
 # TradingBrain V6 Progress
 
+## Runtime Tuning Override (2026-03-18)
+
+- Structure TP floor protection added in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\stop_loss.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\stop_loss.py)
+  - structure TP can no longer replace ATR TP with a closer target
+  - `LONG`: keeps the farther of `structure_tp` and ATR TP
+  - `SHORT`: keeps the farther of `structure_tp` and ATR TP
+- Mean reversion trigger logic relaxed in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\mean_reversion.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\mean_reversion.py)
+  - `long_rsi_ceiling: 26 -> 35`
+  - `short_rsi_floor: 74 -> 65`
+  - removed `close >= ema21` / `close <= ema21` from reversal confirmation
+- RANGING-only strategies now bypass strict directional MTF gate in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\base.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\base.py)
+  - avoids blocking `mean_reversion` when `4h/1h` are neutral
+- Trend following crossover logic updated in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\trend_following.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\trend_following.py)
+  - no longer requires the EMA cross to happen on the current bar
+  - now accepts a valid cross within the last `5` bars while structure remains intact
+  - `close > prev_high` is now a strength bonus instead of a hard requirement
+- `1m` trigger model relaxed in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\main.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\main.py)
+  - `trend_following`: core trigger + 3 choose 2 supports
+  - `mean_reversion`: core trigger + 2 choose 1 supports
+  - pending trigger window widened from `15` to `45` minutes
+- Testnet fallback entry path removed from [`C:\Users\RAYZ\Desktop\coding\tradingbrain\main.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\main.py)
+- Validation:
+  - `python -m pytest -q` -> `78 passed`
+
 ## Phase Status Override (2026-03-14)
 
 - Phase 4: `complete`

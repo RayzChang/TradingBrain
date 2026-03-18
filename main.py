@@ -57,7 +57,8 @@ from core.strategy.signal_aggregator import SignalAggregator
 from core.strategy.coin_screener import CoinScreener
 from core.risk.exit_profiles import normalize_strategy_family
 from core.risk.position_sizer import get_strategy_risk_weight
-from core.risk.risk_manager import RiskManager, RiskCheckResult
+from core.risk.exit_profiles import get_exit_profile
+from core.risk.risk_manager import RiskManager
 from core.brain import get_overrides as brain_get_overrides
 from core.execution.execution_engine import execute_trade, is_trading_enabled
 from core.execution.binance_client import BinanceFuturesClient
@@ -98,7 +99,48 @@ class TradingBrain:
 
     BREAKOUT_RETEST_TOLERANCE_PCT = 0.0035
     BREAKOUT_RETEST_EXPIRE_BARS = 3
-    ENABLE_TESTNET_FALLBACK = False
+
+    @staticmethod
+    def _format_strategy_profile(name: str, alias: str) -> str:
+        """Render a concise strategy risk/exit summary for notifications."""
+        profile = get_exit_profile(name)
+        risk_weight = get_strategy_risk_weight(name)
+        if profile.tp2_final_exit:
+            target_text = (
+                f"SL {profile.stop_loss_atr_mult:.2f} / "
+                f"TP1 {profile.tp1_atr_mult:.2f} / TP2 {profile.tp2_atr_mult:.2f} ATR"
+            )
+        else:
+            target_text = (
+                f"SL {profile.stop_loss_atr_mult:.2f} / "
+                f"TP1 {profile.tp1_atr_mult:.2f} / "
+                f"TP2 {profile.tp2_atr_mult:.2f} / "
+                f"TP3 {profile.tp3_atr_mult:.2f} ATR"
+            )
+        return f"{alias}: risk x{risk_weight:.1f} | {target_text}"
+
+    def _build_runtime_notification_summary(self) -> dict[str, str]:
+        """Return startup/heartbeat summary fields based on live runtime config."""
+        params = self.db.get_risk_params() if self.db else {}
+        active_preset = params.get("active_preset", "unknown")
+        base_risk_pct = float(params.get("max_risk_per_trade", 0.0)) * 100
+        max_open_positions = params.get("max_open_positions", "auto")
+        max_leverage = int(params.get("max_leverage", DEFAULT_LEVERAGE))
+        mode_text = "paper" if TRADING_MODE == "paper" else ("testnet" if BINANCE_TESTNET else "live")
+        strategy_lines = [
+            self._format_strategy_profile("trend_following", "trend_following"),
+            self._format_strategy_profile("breakout_retest", "breakout_retest"),
+            self._format_strategy_profile("mean_reversion", "mean_reversion"),
+        ]
+        return {
+            "mode_text": mode_text,
+            "risk_text": (
+                f"base {base_risk_pct:.2f}% / max_positions {max_open_positions} / "
+                f"max_leverage {max_leverage}x / preset {active_preset}"
+            ),
+            "strategy_text": "trend_following + breakout_retest + mean_reversion",
+            "strategy_lines": "\n".join(f"- {line}" for line in strategy_lines),
+        }
 
     def __init__(self) -> None:
         self.running = False
@@ -115,8 +157,6 @@ class TradingBrain:
         self.risk_manager: RiskManager | None = None
         self.binance_client: BinanceFuturesClient | None = None
         self.last_kline_received_at: float = 0.0  # 供心跳檢查用
-        self._startup_time: float = 0.0
-        self._testnet_fallback_done: bool = False  # Testnet 保底開單僅觸發一次
         self._pending_entries: dict[str, list[PendingEntry]] = {}
 
     @staticmethod
@@ -241,8 +281,6 @@ class TradingBrain:
         logger.info("=" * 60)
         logger.info("TradingBrain 啟動中...")
         logger.info(f"交易模式: {TRADING_MODE}")
-        if not self.ENABLE_TESTNET_FALLBACK:
-            logger.info("Testnet fallback 已停用（Phase 3 正式測試期間）")
         logger.info("=" * 60)
 
         # 確保必要目錄存在
@@ -309,36 +347,21 @@ class TradingBrain:
                 self.binance_client = None
 
         self.running = True
-        self._startup_time = time.time()
         logger.info("TradingBrain 啟動完成！")
         logger.info(f"資料庫: {DB_PATH}")
         logger.info(f"監控幣種: {', '.join(DEFAULT_WATCHLIST)}")
         logger.info(f"交易模式: {TRADING_MODE}")
 
-        # 讀取當前風控設定供 LINE 顯示（從 risk_defaults.json 讀取實際 preset）
-        try:
-            import json as _json
-            with open("config/risk_defaults.json", "r", encoding="utf-8") as _f:
-                _rd = _json.load(_f)
-            _preset_name = _rd.get("active_preset", "passive_income")
-            _preset = _rd.get("presets", {}).get(_preset_name, {})
-            max_risk_pct = float(_preset.get("max_risk_per_trade", 0.03)) * 100
-            max_lev = int(_preset.get("max_leverage", DEFAULT_LEVERAGE))
-            sl_atr = float(_preset.get("stop_loss_atr_mult", 1.5))
-            tp_atr = float(_preset.get("take_profit_atr_mult", 4.0))
-            preset_label = _preset.get("label", _preset_name)
-        except Exception:
-            max_risk_pct, max_lev, sl_atr, tp_atr, preset_label = 3.0, 5, 1.5, 4.0, "passive_income"
+        summary = self._build_runtime_notification_summary()
 
         # Telegram 啟動通知
         mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
         send_telegram_message(
-                f"🧠 TradingBrain V6 {mode_tag} 已啟動\n"
-            f"模式: {TRADING_MODE} | 幣種: {len(DEFAULT_WATCHLIST)}\n"
-            f"策略: 趨勢追蹤 + 突破 + 均值回歸\n"
-            f"(市場狀態自適應 · {preset_label})\n"
-            f"風控: {max_risk_pct:.0f}% 風險 / {max_lev}x 槓桿\n"
-            f"SL={sl_atr}ATR / TP={tp_atr}ATR\n"
+            f"🧠 TradingBrain V6 {mode_tag} 已啟動\n"
+            f"模式: {summary['mode_text']} | 幣種: {len(DEFAULT_WATCHLIST)}\n"
+            f"策略: {summary['strategy_text']}\n"
+            f"風控: {summary['risk_text']}\n"
+            f"{summary['strategy_lines']}\n"
             f"📊 儀表板: http://localhost:8888"
         )
 
@@ -701,61 +724,6 @@ class TradingBrain:
                 market_snap,
             )
 
-        # 保底開單（僅觸發一次）：避免長時間 0 倉，讓整條流程可被驗證/訓練
-        if (
-            self.ENABLE_TESTNET_FALLBACK
-            and (
-            (BINANCE_TESTNET or TRADING_MODE == "paper")
-            and (is_trading_enabled() or TRADING_MODE == "paper")
-            and not self._testnet_fallback_done
-            and (time.time() - self._startup_time) >= (20 * 60 if TRADING_MODE == "paper" else 90 * 60)
-            and len(self.db.get_open_trades()) == 0
-            )
-        ):
-            await self._try_testnet_fallback_order()
-
-    async def _try_testnet_fallback_order(self) -> None:
-        """Testnet 專用：一次小額 BTCUSDT LONG 以驗證下單流程（僅觸發一次）"""
-        if not self.ENABLE_TESTNET_FALLBACK:
-            logger.info("Testnet fallback 已停用，略過保底開單")
-            return
-        self._testnet_fallback_done = True
-        symbol = "BTCUSDT"
-        cache_candles = self.ws_feed.cache.get(symbol.lower(), "15m") if self.ws_feed else []
-        if len(cache_candles) < 10:
-            logger.warning("Testnet 保底開單跳過: BTCUSDT 15m 快取不足")
-            return
-        last_c = cache_candles[-1]
-        entry_price = float(last_c.get("close", 0))
-        if not entry_price or entry_price <= 0:
-            logger.warning("Testnet 保底開單跳過: 無法取得價格")
-            return
-        # 小額 15U 名義、2x 槓桿，止損/止盈各約 0.5%
-        size_usdt = 15.0
-        sl = entry_price * 0.995
-        tp = entry_price * 1.01
-        sig = TradeSignal(
-            symbol=symbol,
-            timeframe="15m",
-            signal_type="LONG",
-            strength=0.5,
-            strategy_name="testnet_fallback",
-            reason="Testnet 保底開單驗證流程",
-        )
-        risk_result = RiskCheckResult(
-            passed=True,
-            size_usdt=size_usdt,
-            leverage=2,
-            stop_loss=sl,
-            take_profit=tp,
-        )
-        logger.info(f"Testnet 保底開單: {symbol} LONG 約 {size_usdt}U @ {entry_price:.2f}")
-        trade_id = await execute_trade(sig, risk_result, entry_price, self.db, "testnet_fallback")
-        if trade_id:
-            logger.info(f"Testnet 保底開單成功: trade_id={trade_id}")
-        else:
-            logger.warning("Testnet 保底開單未成功（可能交易所 API 限制）")
-
     async def _brain_reload(self) -> None:
         """排程：每 15 分鐘依大腦狀態重載策略參數"""
         self._rebuild_strategies_from_brain()
@@ -817,7 +785,7 @@ class TradingBrain:
                     ensure_ascii=False,
                 ) if market_snapshot is not None else None,
                 setup_time=current_time,
-                expires_at=current_time + 15 * 60,
+                expires_at=current_time + 45 * 60,
                 trigger_high=float(latest.get("high", latest.get("close", 0))),
                 trigger_low=float(latest.get("low", latest.get("close", 0))),
                 trigger_close=float(latest.get("close", 0)),
@@ -856,7 +824,7 @@ class TradingBrain:
             else:
                 logger.info(
                     f"候選訊號已建立: {sig.symbol} {sig.signal_type} {sig.strategy_name} "
-                    f"(等待 1m 觸發，15 分鐘內有效)"
+                    f"(等待 1m 觸發，45 分鐘內有效)"
                 )
 
     def _build_breakout_retest_signal(self, pending: PendingEntry) -> TradeSignal:
@@ -1063,24 +1031,36 @@ class TradingBrain:
         direction = pending.signal.signal_type
         strategy = pending.signal.strategy_name
 
+        def _support_gate(checks: dict[str, bool], required_passes: int) -> EntryTriggerCheck:
+            passed = [name for name, ok in checks.items() if ok]
+            failed = [name for name, ok in checks.items() if not ok]
+            if len(passed) >= required_passes:
+                return EntryTriggerCheck(True, "triggered")
+            return EntryTriggerCheck(
+                False,
+                f"support_checks_{len(passed)}_of_{len(checks)}: {', '.join(failed)}",
+            )
+
         if strategy == "trend_following":
             if direction == "LONG":
+                core_ok = close > pending.trigger_close
+                if not core_ok:
+                    return EntryTriggerCheck(False, "close_not_above_trigger_close")
                 checks = {
-                    "close_break_high": close > pending.trigger_high,
-                    "high_break_high": high > pending.trigger_high,
                     "green_candle": close > open_price,
                     "above_ema9": ema9 is not None and close > float(ema9),
-                    "rsi_ok": rsi is not None and float(rsi) >= 52,
+                    "rsi_ok": rsi is not None and float(rsi) >= 50,
                 }
             else:
+                core_ok = close < pending.trigger_close
+                if not core_ok:
+                    return EntryTriggerCheck(False, "close_not_below_trigger_close")
                 checks = {
-                    "close_break_low": close < pending.trigger_low,
-                    "low_break_low": low < pending.trigger_low,
                     "red_candle": close < open_price,
                     "below_ema9": ema9 is not None and close < float(ema9),
+                    "rsi_ok": rsi is not None and float(rsi) <= 50,
                 }
-            failed = [name for name, ok in checks.items() if not ok]
-            return EntryTriggerCheck(not failed, ", ".join(failed) if failed else "triggered")
+            return _support_gate(checks, required_passes=2)
 
         if strategy == "breakout":
             volume_ok = avg_volume > 0 and volume > avg_volume * 1.2
@@ -1101,19 +1081,22 @@ class TradingBrain:
 
         if strategy == "mean_reversion":
             if direction == "LONG":
+                core_ok = close > pending.trigger_close
+                if not core_ok:
+                    return EntryTriggerCheck(False, "close_not_above_trigger_close")
                 checks = {
-                    "close_above_setup_close": close > pending.trigger_close,
                     "green_candle": close > open_price,
                     "above_ema9": ema9 is not None and close > float(ema9),
                 }
             else:
+                core_ok = close < pending.trigger_close
+                if not core_ok:
+                    return EntryTriggerCheck(False, "close_not_below_trigger_close")
                 checks = {
-                    "close_below_setup_close": close < pending.trigger_close,
                     "red_candle": close < open_price,
                     "below_ema9": ema9 is not None and close < float(ema9),
                 }
-            failed = [name for name, ok in checks.items() if not ok]
-            return EntryTriggerCheck(not failed, ", ".join(failed) if failed else "triggered")
+            return _support_gate(checks, required_passes=1)
 
         return EntryTriggerCheck(False, f"unsupported strategy: {strategy}")
 
@@ -1200,6 +1183,7 @@ class TradingBrain:
         daily_pnl = self.db.get_daily_pnl(tz=APP_TIMEZONE)
         open_trades = self.db.get_open_trades()
         mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
+        summary = self._build_runtime_notification_summary()
         balance_str = ""
         if self.binance_client:
             try:
@@ -1212,7 +1196,9 @@ class TradingBrain:
             f"時區: {APP_TIMEZONE_NAME}\n"
             f"今日損益: {daily_pnl:+.2f} U | 筆數: {len(trades_today)} | 未平倉: {len(open_trades)}"
             f"{balance_str}\n"
-            f"策略: V6 (趨勢 + Breakout Retest + 均值回歸) | 日目標: 5-10%"
+            f"模式: {summary['mode_text']}\n"
+            f"策略: {summary['strategy_text']}\n"
+            f"風控: {summary['risk_text']}"
         )
         send_telegram_message(msg)
         logger.debug("監控快報已發送")

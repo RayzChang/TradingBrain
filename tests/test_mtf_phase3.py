@@ -17,7 +17,7 @@ from core.analysis.multi_timeframe import (
     analyze_multi_timeframe,
 )
 from core.analysis.chop_detector import ChopResult
-from core.strategy.base import BaseStrategy, MarketRegime, TradeSignal
+from core.strategy.base import BaseStrategy, MarketRegime, RegimeAssessment, TradeSignal
 
 
 def _make_tf_df(trend: str) -> pd.DataFrame:
@@ -88,6 +88,27 @@ class DummyTrendStrategy(BaseStrategy):
                 strategy_name=self.name,
                 indicators={},
                 reason="dummy",
+            )
+        ]
+
+
+class DummyRangeStrategy(BaseStrategy):
+    allowed_regimes = [MarketRegime.RANGING]
+
+    @property
+    def name(self) -> str:
+        return "dummy_range_phase3"
+
+    def evaluate_single(self, symbol: str, timeframe: str, result: AnalysisResult):
+        return [
+            TradeSignal(
+                symbol=symbol,
+                timeframe=timeframe,
+                signal_type="LONG",
+                strength=0.5,
+                strategy_name=self.name,
+                indicators={},
+                reason="dummy-range",
             )
         ]
 
@@ -167,3 +188,34 @@ def test_base_strategy_blocks_when_recommended_direction_is_missing():
     signals = strategy.evaluate_full(full)
 
     assert signals == []
+
+
+def test_ranging_strategy_bypasses_strict_mtf_gate_when_htf_is_neutral():
+    strategy = DummyRangeStrategy()
+    primary = _make_result(trend="NEUTRAL")
+    full = FullAnalysis(
+        symbol="BTCUSDT",
+        primary_tf="15m",
+        single_tf_results={"15m": primary},
+        mtf=MTFAnalysis(
+            alignment=TimeframeAlignment.CONFLICTING,
+            details={"4h": "NEUTRAL", "1h": "BULLISH", "15m": "BULLISH"},
+            confidence=0.0,
+            recommended_direction=None,
+        ),
+        htf_rsi_confirmed=True,
+    )
+
+    with patch(
+        "core.strategy.base.MarketRegime.assess",
+        return_value=RegimeAssessment(
+            regime=MarketRegime.RANGING,
+            trend_score=0.0,
+            range_score=2.0,
+            volatility_score=0.0,
+        ),
+    ):
+        signals = strategy.evaluate_full(full)
+
+    assert len(signals) == 1
+    assert signals[0].signal_type == "LONG"

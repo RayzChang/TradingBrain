@@ -199,11 +199,23 @@ class StopLossCalculator:
         else:
             structure_floor_triggered = False
         if structure_tp1 is not None:
-            tp1 = structure_tp1
+            if direction == "LONG":
+                tp1 = max(structure_tp1, tp1)
+            else:
+                tp1 = min(structure_tp1, tp1)
         if structure_tp2 is not None:
-            tp2 = structure_tp2
+            if direction == "LONG":
+                tp2 = max(structure_tp2, tp2)
+            else:
+                tp2 = min(structure_tp2, tp2)
         if structure_tp3 is not None or is_mean_reversion:
-            tp3 = structure_tp3 or 0.0
+            if is_mean_reversion:
+                tp3 = 0.0
+            elif structure_tp3 is not None:
+                if direction == "LONG":
+                    tp3 = max(structure_tp3, tp3)
+                else:
+                    tp3 = min(structure_tp3, tp3)
 
         final_target_distance = abs((tp2 if is_mean_reversion else tp3) - entry_price)
         final_target_price = tp2 if is_mean_reversion else tp3

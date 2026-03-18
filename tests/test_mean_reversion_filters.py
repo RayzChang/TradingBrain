@@ -81,3 +81,28 @@ def test_mean_reversion_short_survives_with_bearish_reversal() -> None:
     assert len(signals) == 1
     assert signals[0].signal_type == "SHORT"
     assert signals[0].indicators["bearish_reversal"] is True
+
+
+def test_mean_reversion_long_can_trigger_below_ema21_with_rsi_32() -> None:
+    df = pd.DataFrame(
+        [
+            {"open": 100, "close": 98, "bb_upper": 103, "bb_lower": 97, "ema_21": 101},
+            {"open": 97.5, "close": 98.5, "bb_upper": 102, "bb_lower": 98.2, "ema_21": 100},
+        ]
+    )
+    strategy = MeanReversionStrategy(skip_on_chop=False)
+
+    signals = strategy.evaluate_single(
+        "BTCUSDT",
+        "15m",
+        _make_result(
+            df,
+            rsi=32,
+            bb_pct=0.08,
+            candle_patterns=[_DummyPattern(PatternDirection.BULLISH)],
+        ),
+    )
+
+    assert len(signals) == 1
+    assert signals[0].signal_type == "LONG"
+    assert signals[0].indicators["bullish_reversal"] is True
