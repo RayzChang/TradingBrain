@@ -284,7 +284,6 @@ class TrendFollowingStrategy(BaseStrategy):
                 adx_pos_curr,
                 adx_neg_curr,
                 close_curr,
-                prev.get("low"),
                 rsi_curr,
                 macd_hist_curr,
                 macd_hist_prev,
@@ -306,7 +305,6 @@ class TrendFollowingStrategy(BaseStrategy):
                 self.short_rsi_floor <= rsi_curr <= self.short_rsi_ceiling
                 and macd_hist_curr < 0
                 and macd_hist_curr <= macd_hist_prev
-                and close_curr < prev.get("low")
             )
 
             if (
@@ -362,6 +360,14 @@ class TrendFollowingStrategy(BaseStrategy):
                 strength = max(strength - 0.15, 0.0)
 
             if strength >= 0.3:
+                prev_low = prev.get("low")
+                breakdown_momentum_bonus = (
+                    prev_low is not None
+                    and not (isinstance(prev_low, float) and pd.isna(prev_low))
+                    and close_curr < prev_low
+                )
+                if breakdown_momentum_bonus:
+                    strength = min(strength + 0.1, 1.0)
                 signals.append(
                     TradeSignal(
                         symbol=symbol,
@@ -381,6 +387,7 @@ class TrendFollowingStrategy(BaseStrategy):
                             "macd_hist": round(float(macd_hist_curr), 4) if macd_hist_curr is not None else None,
                             "bb_position": round(float(bb_position), 4) if bb_position is not None else None,
                             "cross_age_bars": bearish_cross_age,
+                            "breakdown_momentum_bonus": breakdown_momentum_bonus,
                             "entry_quality_filter_triggered": False,
                             "bearish_stack_ok": bearish_stack_ok,
                             "bearish_momentum_ok": bearish_momentum_ok,

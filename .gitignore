@@ -66,3 +66,12 @@ frontend/out.txt
 
 # Data temp scripts
 data/screenshot_test.py
+
+# Claude Code internal
+.claude/
+
+# Runtime logs directory
+logs/
+
+# Local research documents
+*.docx
