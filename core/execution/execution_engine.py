@@ -17,7 +17,7 @@ from config.settings import (
     TRADING_MODE,
 )
 from core.execution.binance_client import BinanceFuturesClient
-from core.risk.exit_profiles import get_exit_profile
+from core.risk.exit_profiles import get_exit_profile, normalize_strategy_family
 from notifications.telegram_notify import send_telegram_message
 
 if TYPE_CHECKING:
@@ -66,6 +66,7 @@ async def execute_trade(
         return None
 
     strategy_name = strategy_name or signal.strategy_name
+    strategy_family = normalize_strategy_family(strategy_name)
     symbol = signal.symbol
     side_binance = "BUY" if signal.signal_type == "LONG" else "SELL"
     size_usdt = risk_result.size_usdt
@@ -144,9 +145,11 @@ async def execute_trade(
         paper_margin = size_usdt / leverage if leverage else size_usdt
         msg = (
             f"✅ TradingBrain V7 模擬開倉\n"
-            f"{symbol} {signal.signal_type} | 保證金 {paper_margin:.0f}U | 名義倉位 {size_usdt:.0f}U ({leverage}x)\n"
+            f"{symbol} {signal.signal_type} | 策略 {strategy_name} ({strategy_family})\n"
+            f"保證金 {paper_margin:.0f}U | 名義倉位 {size_usdt:.0f}U ({leverage}x)\n"
             f"進場: {entry_price:.2f}\n"
-            f"Soft SL: {soft_stop_loss:.4f} | Hard SL: {hard_stop_loss:.4f}\n"
+            f"保護: Soft SL {soft_stop_loss:.4f} / Hard SL {hard_stop_loss:.4f} / "
+            f"Soft 失效需連續 {soft_stop_required_closes} 根收破\n"
             f"TP1: {tp1:.4f} | TP2: {tp2:.4f} | TP3: {tp3:.4f}"
         )
         send_telegram_message(msg)
@@ -248,10 +251,11 @@ async def execute_trade(
     margin_cost = size_usdt / leverage if leverage else size_usdt
     open_msg = (
         f"✅ TradingBrain V7 開倉 ({mode})\n"
-        f"{symbol} {signal.signal_type} | 策略: {strategy_name}\n"
+        f"{symbol} {signal.signal_type} | 策略 {strategy_name} ({strategy_family})\n"
         f"保證金 {margin_cost:.0f} U | 名義倉位 {size_usdt:.0f} U ({leverage}x)\n"
         f"進場: {entry_price:.4f}\n"
-        f"Soft SL: {soft_stop_loss:.4f} | Hard SL: {hard_stop_loss:.4f}\n"
+        f"保護: Soft SL {soft_stop_loss:.4f} / Hard SL {hard_stop_loss:.4f} / "
+        f"Soft 失效需連續 {soft_stop_required_closes} 根收破\n"
         f"TP1: {tp1:.4f} | TP2: {tp2:.4f} | TP3: {tp3:.4f}"
     )
     send_telegram_message(open_msg)

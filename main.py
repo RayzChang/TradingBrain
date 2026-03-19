@@ -105,19 +105,34 @@ class TradingBrain:
         """Render a concise strategy risk/exit summary for notifications."""
         profile = get_exit_profile(name)
         risk_weight = get_strategy_risk_weight(name)
+        strategy_descriptions = {
+            "trend_following": "順勢回踩續行",
+            "breakout_retest": "結構突破回踩",
+            "mean_reversion": "區間邊界回歸",
+        }
+        regime_notes = {
+            "trend_following": "偏好 TRENDING，RANGING 降權",
+            "breakout_retest": "偏好 TRENDING，RANGING 降權",
+            "mean_reversion": "偏好 RANGING，MTF gate 豁免",
+        }
         if profile.tp2_final_exit:
             target_text = (
-                f"SL {profile.stop_loss_atr_mult:.2f} / "
+                f"SL {profile.stop_loss_atr_mult:.2f} ATR / "
                 f"TP1 {profile.tp1_atr_mult:.2f} / TP2 {profile.tp2_atr_mult:.2f} ATR"
             )
         else:
             target_text = (
-                f"SL {profile.stop_loss_atr_mult:.2f} / "
+                f"SL {profile.stop_loss_atr_mult:.2f} ATR / "
                 f"TP1 {profile.tp1_atr_mult:.2f} / "
                 f"TP2 {profile.tp2_atr_mult:.2f} / "
                 f"TP3 {profile.tp3_atr_mult:.2f} ATR"
             )
-        return f"{alias}: risk x{risk_weight:.1f} | {target_text}"
+        description = strategy_descriptions.get(alias, alias)
+        regime_note = regime_notes.get(alias, "依當前 regime 運行")
+        return (
+            f"- {alias}: {description} | {regime_note} | "
+            f"risk x{risk_weight:.1f} | {target_text}"
+        )
 
     def _build_runtime_notification_summary(self) -> dict[str, str]:
         """Return startup/heartbeat summary fields based on live runtime config."""
@@ -126,20 +141,31 @@ class TradingBrain:
         base_risk_pct = float(params.get("max_risk_per_trade", 0.0)) * 100
         max_open_positions = params.get("max_open_positions", "auto")
         max_leverage = int(params.get("max_leverage", DEFAULT_LEVERAGE))
+        max_daily_loss_pct = float(params.get("max_daily_loss", 0.0)) * 100
         mode_text = "paper" if TRADING_MODE == "paper" else ("testnet" if BINANCE_TESTNET else "live")
         strategy_lines = [
             self._format_strategy_profile("trend_following", "trend_following"),
             self._format_strategy_profile("breakout_retest", "breakout_retest"),
             self._format_strategy_profile("mean_reversion", "mean_reversion"),
         ]
+        risk_lines = [
+            f"- 預設方案: {active_preset}",
+            (
+                f"- 基準單筆風險 {base_risk_pct:.2f}% / 最大同時持倉 {max_open_positions} / "
+                f"最大槓桿上限 {max_leverage}x / 單日虧損上限 {max_daily_loss_pct:.2f}%"
+            ),
+            "- 結構止損優先，持倉以 soft stop + hard stop 雙層保護",
+            "- 倉位由止損距離反推，槓桿是結果，不是預設固定值",
+        ]
         return {
             "mode_text": mode_text,
             "risk_text": (
-                f"base {base_risk_pct:.2f}% / max_positions {max_open_positions} / "
-                f"max_leverage {max_leverage}x / preset {active_preset}"
+                f"preset {active_preset} | base risk {base_risk_pct:.2f}% | "
+                f"max_positions {max_open_positions} | max_leverage {max_leverage}x"
             ),
-            "strategy_text": "trend_following + breakout_retest + mean_reversion",
-            "strategy_lines": "\n".join(f"- {line}" for line in strategy_lines),
+            "strategy_text": "trend_following / breakout_retest / mean_reversion",
+            "strategy_lines": "\n".join(strategy_lines),
+            "risk_lines": "\n".join(risk_lines),
         }
 
     def __init__(self) -> None:
@@ -359,9 +385,9 @@ class TradingBrain:
         send_telegram_message(
             f"🧠 TradingBrain V7 {mode_tag} 已啟動\n"
             f"模式: {summary['mode_text']} | 幣種: {len(DEFAULT_WATCHLIST)}\n"
-            f"策略: {summary['strategy_text']}\n"
-            f"風控: {summary['risk_text']}\n"
+            f"策略組合: {summary['strategy_text']}\n"
             f"{summary['strategy_lines']}\n"
+            f"風控摘要:\n{summary['risk_lines']}\n"
             f"📊 儀表板: http://localhost:8888"
         )
 
@@ -1207,8 +1233,8 @@ class TradingBrain:
             f"今日損益: {daily_pnl:+.2f} U | 筆數: {len(trades_today)} | 未平倉: {len(open_trades)}"
             f"{balance_str}\n"
             f"模式: {summary['mode_text']}\n"
-            f"策略: {summary['strategy_text']}\n"
-            f"風控: {summary['risk_text']}"
+            f"策略組合: {summary['strategy_text']}\n"
+            f"風控摘要: {summary['risk_text']}"
         )
         send_telegram_message(msg)
         logger.debug("監控快報已發送")
