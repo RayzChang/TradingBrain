@@ -474,32 +474,32 @@ class BaseStrategy(ABC):
             )
             return []
 
+        _preferred_regime = self.allowed_regimes[0] if self.allowed_regimes else None
+        _in_non_preferred_regime = (
+            regime != MarketRegime.UNKNOWN
+            and _preferred_regime is not None
+            and regime != _preferred_regime
+        )
+
         signals = self.evaluate_single(full.symbol, tf, single)
         if not signals:
             return signals
 
-        mtf_details = full.mtf.details if full.mtf else {}
-        direction_4h = mtf_details.get("4h")
-        direction_1h = mtf_details.get("1h")
-        valid_directions = {"BULLISH", "BEARISH"}
+        if _in_non_preferred_regime and signals:
+            for sig in signals:
+                sig.strength = round(sig.strength * 0.7, 4)
+                sig.indicators["regime_penalty"] = True
+            logger.debug(
+                f"{self.name} running in non-preferred regime {regime}, "
+                f"strength scaled by 0.7"
+            )
+
         is_ranging_only = self.allowed_regimes == [MarketRegime.RANGING]
 
         if not is_ranging_only:
-            if direction_4h not in valid_directions:
+            if full.mtf is None or full.mtf.recommended_direction is None:
                 logger.info(
-                    f"MTF_GATE_BLOCK: {full.symbol} 4h direction invalid ({direction_4h or 'missing'})"
-                )
-                return []
-
-            if direction_1h not in valid_directions:
-                logger.info(
-                    f"MTF_GATE_BLOCK: {full.symbol} 1h direction invalid ({direction_1h or 'missing'})"
-                )
-                return []
-
-            if direction_1h != direction_4h:
-                logger.info(
-                    f"MTF_GATE_BLOCK: {full.symbol} 1h {direction_1h} != 4h {direction_4h}"
+                    f"MTF_GATE_BLOCK: {full.symbol} no recommended direction"
                 )
                 return []
 
@@ -510,11 +510,10 @@ class BaseStrategy(ABC):
             mtf_direction = full.mtf.recommended_direction
             mtf_confidence = full.mtf.confidence
 
-        if mtf_direction is None and not is_ranging_only:
-            logger.info(
-                f"MTF_GATE_BLOCK: {full.symbol} recommended_direction unavailable"
-            )
-            return []
+        if (not is_ranging_only) and full.mtf and full.mtf.confidence < 1.0:
+            for sig in signals:
+                sig.strength = round(sig.strength * full.mtf.confidence, 4)
+                sig.indicators["mtf_confidence_scaled"] = full.mtf.confidence
 
         htf_rsi_ok = full.htf_rsi_confirmed
 

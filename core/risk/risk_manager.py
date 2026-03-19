@@ -23,10 +23,21 @@ class RiskCheckResult:
     size_usdt: float = 0.0
     leverage: int = 1
     stop_loss: float = 0.0
+    soft_stop_loss: float = 0.0
+    hard_stop_loss: float = 0.0
+    soft_stop_required_closes: int = 0
+    stop_zone_low: float = 0.0
+    stop_zone_high: float = 0.0
     take_profit: float = 0.0
     tp1: float = 0.0
+    tp1_zone_low: float = 0.0
+    tp1_zone_high: float = 0.0
     tp2: float = 0.0
+    tp2_zone_low: float = 0.0
+    tp2_zone_high: float = 0.0
     tp3: float = 0.0
+    tp3_zone_low: float = 0.0
+    tp3_zone_high: float = 0.0
     atr: float = 0.0
     effective_risk_pct: float = 0.0
     sl_atr_mult: float = 0.0
@@ -54,7 +65,8 @@ class RiskManager:
         open_trades_count: int,
     ) -> RiskCheckResult:
         """Run all pre-trade risk checks and return the executable risk profile."""
-        daily = self.daily_limits.can_open(current_balance)
+        daily_pnl = self.db.get_daily_pnl()
+        daily = self.daily_limits.can_open(current_balance, daily_pnl=daily_pnl)
         if not daily.can_open:
             return RiskCheckResult(
                 passed=False,
@@ -102,6 +114,7 @@ class RiskManager:
             strategy_name=signal.strategy_name,
             signal_strength=signal.strength,
             stop_loss_price=sl_result.stop_loss,
+            daily_pnl=daily_pnl,
         )
         if size_result.rejected:
             return RiskCheckResult(
@@ -113,17 +126,29 @@ class RiskManager:
         logger.info(
             f"Risk PASS: {signal.symbol} {signal.signal_type} "
             f"size={size_result.size_usdt}U leverage={size_result.leverage} "
-            f"sl={sl_result.stop_loss} tp1={sl_result.tp1} tp2={sl_result.tp2} tp3={sl_result.tp3}"
+            f"soft_sl={sl_result.soft_stop_loss} hard_sl={sl_result.hard_stop_loss} "
+            f"tp1={sl_result.tp1} tp2={sl_result.tp2} tp3={sl_result.tp3}"
         )
         return RiskCheckResult(
             passed=True,
             size_usdt=size_result.size_usdt,
             leverage=size_result.leverage,
             stop_loss=sl_result.stop_loss,
+            soft_stop_loss=sl_result.soft_stop_loss,
+            hard_stop_loss=sl_result.hard_stop_loss,
+            soft_stop_required_closes=sl_result.soft_stop_required_closes,
+            stop_zone_low=sl_result.stop_zone_low,
+            stop_zone_high=sl_result.stop_zone_high,
             take_profit=sl_result.take_profit,
             tp1=sl_result.tp1,
+            tp1_zone_low=sl_result.tp1_zone_low,
+            tp1_zone_high=sl_result.tp1_zone_high,
             tp2=sl_result.tp2,
+            tp2_zone_low=sl_result.tp2_zone_low,
+            tp2_zone_high=sl_result.tp2_zone_high,
             tp3=sl_result.tp3,
+            tp3_zone_low=sl_result.tp3_zone_low,
+            tp3_zone_high=sl_result.tp3_zone_high,
             atr=atr,
             effective_risk_pct=size_result.effective_risk_pct,
             sl_atr_mult=sl_result.sl_atr_mult,

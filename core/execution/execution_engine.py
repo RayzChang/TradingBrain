@@ -71,11 +71,24 @@ async def execute_trade(
     size_usdt = risk_result.size_usdt
     leverage = risk_result.leverage
     stop_loss = risk_result.stop_loss
+    soft_stop_loss = getattr(risk_result, "soft_stop_loss", stop_loss) or stop_loss
+    hard_stop_loss = getattr(risk_result, "hard_stop_loss", stop_loss) or stop_loss
+    soft_stop_required_closes = int(
+        getattr(risk_result, "soft_stop_required_closes", 0) or 0
+    )
+    stop_zone_low = getattr(risk_result, "stop_zone_low", 0.0) or 0.0
+    stop_zone_high = getattr(risk_result, "stop_zone_high", 0.0) or 0.0
     take_profit = risk_result.take_profit
 
     tp1 = getattr(risk_result, "tp1", 0.0) or 0.0
+    tp1_zone_low = getattr(risk_result, "tp1_zone_low", 0.0) or 0.0
+    tp1_zone_high = getattr(risk_result, "tp1_zone_high", 0.0) or 0.0
     tp2 = getattr(risk_result, "tp2", 0.0) or 0.0
+    tp2_zone_low = getattr(risk_result, "tp2_zone_low", 0.0) or 0.0
+    tp2_zone_high = getattr(risk_result, "tp2_zone_high", 0.0) or 0.0
     tp3 = getattr(risk_result, "tp3", 0.0) or 0.0
+    tp3_zone_low = getattr(risk_result, "tp3_zone_low", 0.0) or 0.0
+    tp3_zone_high = getattr(risk_result, "tp3_zone_high", 0.0) or 0.0
     atr = getattr(risk_result, "atr", 0.0) or 0.0
     effective_risk_pct = getattr(risk_result, "effective_risk_pct", 0.0) or 0.0
     sl_atr_mult = getattr(risk_result, "sl_atr_mult", 0.0) or 0.0
@@ -96,11 +109,22 @@ async def execute_trade(
             "entry_price": entry_price,
             "quantity": quantity_base,
             "leverage": leverage,
-            "stop_loss": stop_loss if stop_loss else None,
+            "stop_loss": hard_stop_loss if hard_stop_loss else None,
+            "soft_stop_loss": soft_stop_loss if soft_stop_loss else None,
+            "hard_stop_loss": hard_stop_loss if hard_stop_loss else None,
+            "soft_stop_required_closes": soft_stop_required_closes,
+            "stop_zone_low": stop_zone_low if stop_zone_low else None,
+            "stop_zone_high": stop_zone_high if stop_zone_high else None,
             "take_profit": take_profit if take_profit else None,
             "tp1_price": tp1 if tp1 else None,
+            "tp1_zone_low": tp1_zone_low if tp1_zone_low else None,
+            "tp1_zone_high": tp1_zone_high if tp1_zone_high else None,
             "tp2_price": tp2 if tp2 else None,
+            "tp2_zone_low": tp2_zone_low if tp2_zone_low else None,
+            "tp2_zone_high": tp2_zone_high if tp2_zone_high else None,
             "tp3_price": tp3 if tp3 else None,
+            "tp3_zone_low": tp3_zone_low if tp3_zone_low else None,
+            "tp3_zone_high": tp3_zone_high if tp3_zone_high else None,
             "tp_stage": 0,
             "original_quantity": quantity_base,
             "current_quantity": quantity_base,
@@ -119,10 +143,10 @@ async def execute_trade(
         trade_id = db.insert_trade(trade_data)
         paper_margin = size_usdt / leverage if leverage else size_usdt
         msg = (
-                    f"✅ TradingBrain V6 模擬開倉\n"
+            f"✅ TradingBrain V7 模擬開倉\n"
             f"{symbol} {signal.signal_type} | 保證金 {paper_margin:.0f}U | 名義倉位 {size_usdt:.0f}U ({leverage}x)\n"
             f"進場: {entry_price:.2f}\n"
-            f"SL: {stop_loss:.4f}\n"
+            f"Soft SL: {soft_stop_loss:.4f} | Hard SL: {hard_stop_loss:.4f}\n"
             f"TP1: {tp1:.4f} | TP2: {tp2:.4f} | TP3: {tp3:.4f}"
         )
         send_telegram_message(msg)
@@ -163,9 +187,9 @@ async def execute_trade(
 
     close_side = "SELL" if signal.signal_type == "LONG" else "BUY"
     if exchange_managed_protection:
-        if stop_loss and stop_loss > 0:
+        if hard_stop_loss and hard_stop_loss > 0:
             await client.place_stop_loss(
-                symbol, close_side, quantity_base, stop_loss, reduce_only=True
+                symbol, close_side, quantity_base, hard_stop_loss, reduce_only=True
             )
         profile = get_exit_profile(strategy_name)
         tp1_qty = quantity_base * profile.tp1_close_pct
@@ -186,11 +210,22 @@ async def execute_trade(
         "entry_price": entry_price,
         "quantity": quantity_base,
         "leverage": leverage,
-        "stop_loss": stop_loss if stop_loss else None,
+        "stop_loss": hard_stop_loss if hard_stop_loss else None,
+        "soft_stop_loss": soft_stop_loss if soft_stop_loss else None,
+        "hard_stop_loss": hard_stop_loss if hard_stop_loss else None,
+        "soft_stop_required_closes": soft_stop_required_closes,
+        "stop_zone_low": stop_zone_low if stop_zone_low else None,
+        "stop_zone_high": stop_zone_high if stop_zone_high else None,
         "take_profit": take_profit if take_profit else None,
         "tp1_price": tp1 if tp1 else None,
+        "tp1_zone_low": tp1_zone_low if tp1_zone_low else None,
+        "tp1_zone_high": tp1_zone_high if tp1_zone_high else None,
         "tp2_price": tp2 if tp2 else None,
+        "tp2_zone_low": tp2_zone_low if tp2_zone_low else None,
+        "tp2_zone_high": tp2_zone_high if tp2_zone_high else None,
         "tp3_price": tp3 if tp3 else None,
+        "tp3_zone_low": tp3_zone_low if tp3_zone_low else None,
+        "tp3_zone_high": tp3_zone_high if tp3_zone_high else None,
         "tp_stage": 0,
         "original_quantity": quantity_base,
         "current_quantity": quantity_base,
@@ -212,11 +247,11 @@ async def execute_trade(
     mode = "Testnet" if BINANCE_TESTNET else "撖衣"
     margin_cost = size_usdt / leverage if leverage else size_usdt
     open_msg = (
-                    f"✅ TradingBrain V6 開倉 ({mode})\n"
+        f"✅ TradingBrain V7 開倉 ({mode})\n"
         f"{symbol} {signal.signal_type} | 策略: {strategy_name}\n"
         f"保證金 {margin_cost:.0f} U | 名義倉位 {size_usdt:.0f} U ({leverage}x)\n"
         f"進場: {entry_price:.4f}\n"
-        f"SL: {stop_loss:.4f}\n"
+        f"Soft SL: {soft_stop_loss:.4f} | Hard SL: {hard_stop_loss:.4f}\n"
         f"TP1: {tp1:.4f} | TP2: {tp2:.4f} | TP3: {tp3:.4f}"
     )
     send_telegram_message(open_msg)

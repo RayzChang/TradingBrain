@@ -16,7 +16,7 @@ from loguru import logger
 import pandas as pd
 
 from core.risk.exit_profiles import get_exit_profile, normalize_strategy_family
-from core.risk.structure_levels import compute_structure_levels, get_structure_stop_floor_mult
+from core.risk.structure_levels import compute_structure_levels
 
 if TYPE_CHECKING:
     from database.db_manager import DatabaseManager
@@ -28,9 +28,20 @@ class StopLossResult:
 
     stop_loss: float
     take_profit: float
+    soft_stop_loss: float = 0.0
+    hard_stop_loss: float = 0.0
     tp1: float = 0.0
     tp2: float = 0.0
     tp3: float = 0.0
+    soft_stop_required_closes: int = 0
+    stop_zone_low: float = 0.0
+    stop_zone_high: float = 0.0
+    tp1_zone_low: float = 0.0
+    tp1_zone_high: float = 0.0
+    tp2_zone_low: float = 0.0
+    tp2_zone_high: float = 0.0
+    tp3_zone_low: float = 0.0
+    tp3_zone_high: float = 0.0
     sl_atr_mult: float = 0.0
     structure_stop_floor_triggered: bool = False
     rejected: bool = False
@@ -143,20 +154,41 @@ class StopLossCalculator:
         )
 
         structure_stop = None
+        structure_hard_stop = None
+        structure_stop_anchor = None
+        stop_zone_low = None
+        stop_zone_high = None
         structure_tp1 = None
+        structure_tp1_zone_low = None
+        structure_tp1_zone_high = None
         structure_tp2 = None
+        structure_tp2_zone_low = None
+        structure_tp2_zone_high = None
         structure_tp3 = None
+        structure_tp3_zone_low = None
+        structure_tp3_zone_high = None
         if structure_df is not None and not structure_df.empty:
             structure = compute_structure_levels(
                 structure_df,
                 entry_price,
                 direction,
                 strategy_name=strategy_name,
+                atr=atr,
             )
             structure_stop = structure.stop_loss
+            structure_hard_stop = structure.hard_stop_loss
+            structure_stop_anchor = structure.stop_anchor
+            stop_zone_low = structure.stop_zone_low
+            stop_zone_high = structure.stop_zone_high
             structure_tp1 = structure.tp1
+            structure_tp1_zone_low = structure.tp1_zone_low
+            structure_tp1_zone_high = structure.tp1_zone_high
             structure_tp2 = structure.tp2
+            structure_tp2_zone_low = structure.tp2_zone_low
+            structure_tp2_zone_high = structure.tp2_zone_high
             structure_tp3 = structure.tp3
+            structure_tp3_zone_low = structure.tp3_zone_low
+            structure_tp3_zone_high = structure.tp3_zone_high
 
         sl_distance = sl_mult * atr
         tp1_distance = tp1_mult * atr
@@ -164,40 +196,34 @@ class StopLossCalculator:
         tp3_distance = tp3_mult * atr
 
         if direction == "LONG":
-            stop_loss = entry_price - sl_distance
+            soft_stop_loss = entry_price - sl_distance
+            hard_stop_loss = soft_stop_loss
             tp1 = entry_price + tp1_distance
             tp2 = entry_price + tp2_distance
             tp3 = entry_price + tp3_distance if tp3_distance > 0 else 0.0
         else:
-            stop_loss = entry_price + sl_distance
+            soft_stop_loss = entry_price + sl_distance
+            hard_stop_loss = soft_stop_loss
             tp1 = entry_price - tp1_distance
             tp2 = entry_price - tp2_distance
             tp3 = entry_price - tp3_distance if tp3_distance > 0 else 0.0
 
         if structure_stop is not None:
-            min_atr_mult = get_structure_stop_floor_mult(strategy_name)
-            final_structure_stop = structure_stop
-            structure_floor_triggered = False
-            if min_atr_mult is not None:
-                atr_floor_stop = (
-                    entry_price - (min_atr_mult * atr)
-                    if direction == "LONG"
-                    else entry_price + (min_atr_mult * atr)
+            soft_stop_loss = structure_stop
+            hard_stop_loss = structure_hard_stop or structure_stop
+            structure_floor_triggered = bool(
+                structure_stop_anchor is not None
+                and round(float(structure_stop_anchor), 4) != round(float(structure_stop), 4)
+            )
+            if structure_floor_triggered:
+                logger.info(
+                    "STRUCTURE_STOP_ZONE: "
+                    f"{symbol or 'UNKNOWN'} anchor={structure_stop_anchor:.4f} "
+                    f"soft={soft_stop_loss:.4f} hard={hard_stop_loss:.4f}"
                 )
-                if direction == "LONG":
-                    final_structure_stop = min(structure_stop, atr_floor_stop)
-                else:
-                    final_structure_stop = max(structure_stop, atr_floor_stop)
-                if final_structure_stop != structure_stop:
-                    structure_floor_triggered = True
-                    logger.info(
-                        "STRUCTURE_STOP_FLOOR: "
-                        f"{symbol or 'UNKNOWN'} structure={structure_stop:.4f} "
-                        f"atr_floor={atr_floor_stop:.4f} final={final_structure_stop:.4f}"
-                    )
-            stop_loss = final_structure_stop
         else:
             structure_floor_triggered = False
+
         if structure_tp1 is not None:
             if direction == "LONG":
                 tp1 = max(structure_tp1, tp1)
@@ -220,10 +246,12 @@ class StopLossCalculator:
         final_target_distance = abs((tp2 if is_mean_reversion else tp3) - entry_price)
         final_target_price = tp2 if is_mean_reversion else tp3
 
-        sl_distance_abs = abs(entry_price - stop_loss)
+        sl_distance_abs = abs(entry_price - soft_stop_loss)
         if sl_distance_abs <= 0:
             return StopLossResult(
                 stop_loss=0.0,
+                soft_stop_loss=0.0,
+                hard_stop_loss=0.0,
                 take_profit=0.0,
                 rejected=True,
                 reason="invalid structure stop distance",
@@ -235,11 +263,22 @@ class StopLossCalculator:
                 f"< min_risk_reward {min_rr}, reject"
             )
             return StopLossResult(
-                stop_loss=stop_loss,
+                stop_loss=soft_stop_loss,
+                soft_stop_loss=soft_stop_loss,
+                hard_stop_loss=hard_stop_loss,
                 take_profit=final_target_price,
                 tp1=tp1,
                 tp2=tp2,
                 tp3=tp3,
+                soft_stop_required_closes=self._soft_stop_required_closes(strategy_name),
+                stop_zone_low=stop_zone_low or 0.0,
+                stop_zone_high=stop_zone_high or 0.0,
+                tp1_zone_low=structure_tp1_zone_low or 0.0,
+                tp1_zone_high=structure_tp1_zone_high or 0.0,
+                tp2_zone_low=structure_tp2_zone_low or 0.0,
+                tp2_zone_high=structure_tp2_zone_high or 0.0,
+                tp3_zone_low=structure_tp3_zone_low or 0.0,
+                tp3_zone_high=structure_tp3_zone_high or 0.0,
                 sl_atr_mult=sl_mult,
                 structure_stop_floor_triggered=structure_floor_triggered,
                 rejected=True,
@@ -247,12 +286,30 @@ class StopLossCalculator:
             )
 
         return StopLossResult(
-            stop_loss=round(stop_loss, 4),
+            stop_loss=round(soft_stop_loss, 4),
+            soft_stop_loss=round(soft_stop_loss, 4),
+            hard_stop_loss=round(hard_stop_loss, 4),
             take_profit=round(final_target_price, 4),
             tp1=round(tp1, 4),
             tp2=round(tp2, 4),
             tp3=round(tp3, 4),
+            soft_stop_required_closes=self._soft_stop_required_closes(strategy_name),
+            stop_zone_low=round(stop_zone_low or 0.0, 4),
+            stop_zone_high=round(stop_zone_high or 0.0, 4),
+            tp1_zone_low=round(structure_tp1_zone_low or 0.0, 4),
+            tp1_zone_high=round(structure_tp1_zone_high or 0.0, 4),
+            tp2_zone_low=round(structure_tp2_zone_low or 0.0, 4),
+            tp2_zone_high=round(structure_tp2_zone_high or 0.0, 4),
+            tp3_zone_low=round(structure_tp3_zone_low or 0.0, 4),
+            tp3_zone_high=round(structure_tp3_zone_high or 0.0, 4),
             sl_atr_mult=sl_mult,
             structure_stop_floor_triggered=structure_floor_triggered,
             rejected=False,
         )
+
+    @staticmethod
+    def _soft_stop_required_closes(strategy_name: str) -> int:
+        family = normalize_strategy_family(strategy_name)
+        if family == "mean_reversion":
+            return 1
+        return 2

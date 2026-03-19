@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.risk.position_sizer import PositionSizer, PositionSizeResult, _parse_max_open_positions
+from core.risk.position_sizer import PositionSizer, PositionSizeResult, _parse_max_open_positions, _conviction_tier
 from core.risk.stop_loss import StopLossCalculator, StopLossResult
 from core.risk.exit_profiles import get_exit_profile, normalize_strategy_family
 from core.risk.structure_levels import (
@@ -133,12 +133,12 @@ def test_position_sizer_applies_strategy_weight_and_signal_strength():
     assert trend.rejected is False
     assert mean_rev.rejected is False
     assert boosted.rejected is False
-    assert breakout.effective_risk_pct == 0.02
-    assert trend.effective_risk_pct == 0.016
-    assert mean_rev.effective_risk_pct == 0.014
+    assert breakout.effective_risk_pct == 0.026
+    assert trend.effective_risk_pct == 0.0208
+    assert mean_rev.effective_risk_pct == 0.0182
     assert boosted.effective_risk_pct == 0.026
     assert breakout.size_usdt > trend.size_usdt > mean_rev.size_usdt
-    assert boosted.size_usdt > breakout.size_usdt
+    assert boosted.size_usdt == breakout.size_usdt
     print("  [PASS]")
 
 
@@ -238,6 +238,7 @@ def test_exit_profile_family_mapping() -> None:
     assert get_exit_profile("breakout_retest").family == "breakout"
     assert get_exit_profile("trend_following").family == "trend_following"
     assert get_exit_profile("mean_reversion").tp2_final_exit is True
+    assert get_exit_profile("mean_reversion").min_risk_reward == 0.8
     print("  [PASS]")
 
 
@@ -366,31 +367,35 @@ def test_risk_manager_uses_mean_reversion_profile():
 def test_stop_loss_calculator_uses_structure_when_available():
     print("\n=== 測試風控優先使用結構位 ===")
     calc = StopLossCalculator(db=None)
+    # 20 bars with a clear swing low at bar 9 (low=109).
+    # order=3 needs bars 6-8 and 10-12 lows > 109 → satisfied.
     df = pd.DataFrame(
         {
-            "open": [100, 101, 102, 103, 104, 106, 108, 109, 108, 110, 111, 112],
-            "high": [101, 102, 103, 104, 106, 108, 109, 110, 110, 112, 113, 115],
-            "low": [99, 100, 101, 102, 103, 105, 107, 108, 107.8, 109, 110, 111],
-            "close": [100, 101.5, 102.5, 103.5, 105.5, 107.5, 108.5, 108.8, 109.5, 111, 112, 114],
+            "open":  [102, 103, 104, 105, 106, 108, 111, 110.5, 110, 109.5, 110, 111, 112, 113, 112.5, 112, 112, 113, 114, 115],
+            "high":  [103, 104, 105, 106, 108, 110, 112, 111.5, 111, 110.5, 111, 112, 113, 114, 113.5, 113, 113, 114, 115, 116],
+            "low":   [101, 102, 103, 104, 105, 107, 110, 109.5, 109.2, 109, 109.5, 110, 111, 112, 111.5, 111, 111, 112, 113, 114],
+            "close": [103, 104, 105, 106, 107, 109, 111, 110, 110, 110, 111, 112, 113, 113, 112, 112, 113, 114, 115, 115.5],
         }
     )
     result = calc.compute(
-        entry_price=110,
+        entry_price=115,
         atr=2,
         direction="LONG",
         strategy_name="trend_following",
         structure_df=df,
     )
     assert result.rejected is False
-    assert result.stop_loss < 110
-    assert result.tp1 > 110
+    assert result.stop_loss < 115
+    assert result.tp1 > 115
+    assert result.hard_stop_loss < result.soft_stop_loss
+    assert result.soft_stop_required_closes == 2
     print("  [PASS]")
 
 
-def test_stop_loss_calculator_applies_structure_floor_for_breakout_long(
+def test_stop_loss_calculator_prefers_structure_stop_for_breakout_long(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    print("\n=== 測試 breakout 結構止損套用最小 ATR floor ===")
+    print("\n=== 測試 breakout 結構止損優先於 ATR floor ===")
     calc = StopLossCalculator(db=None)
     monkeypatch.setattr(
         "core.risk.stop_loss.compute_structure_levels",
@@ -412,18 +417,19 @@ def test_stop_loss_calculator_applies_structure_floor_for_breakout_long(
         structure_df=df,
         min_risk_reward=1.4,
     )
-    expected_floor = round(1.323 - (2.0 * 0.0088), 4)
     assert result.rejected is False
-    assert result.stop_loss == expected_floor
+    assert result.stop_loss == 1.3210
+    assert result.soft_stop_loss == 1.3210
+    assert result.hard_stop_loss == 1.3210
     assert result.sl_atr_mult == 2.0
-    assert result.structure_stop_floor_triggered is True
+    assert result.structure_stop_floor_triggered is False
     print("  [PASS]")
 
 
-def test_stop_loss_calculator_applies_structure_floor_for_breakout_short(
+def test_stop_loss_calculator_prefers_structure_stop_for_breakout_short(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    print("\n=== 測試 breakout SHORT 結構止損套用最小 ATR floor ===")
+    print("\n=== 測試 breakout SHORT 結構止損優先於 ATR floor ===")
     calc = StopLossCalculator(db=None)
     monkeypatch.setattr(
         "core.risk.stop_loss.compute_structure_levels",
@@ -445,11 +451,12 @@ def test_stop_loss_calculator_applies_structure_floor_for_breakout_short(
         structure_df=df,
         min_risk_reward=0.7,
     )
-    expected_floor = round(99.0 + (2.0 * 2.0), 4)
     assert result.rejected is False
-    assert result.stop_loss == expected_floor
+    assert result.stop_loss == 100.5
+    assert result.soft_stop_loss == 100.5
+    assert result.hard_stop_loss == 100.5
     assert result.sl_atr_mult == 2.0
-    assert result.structure_stop_floor_triggered is True
+    assert result.structure_stop_floor_triggered is False
     print("  [PASS]")
 
 
@@ -482,6 +489,64 @@ def test_stop_loss_calculator_prefers_atr_tp_when_structure_tp_is_too_close(
     assert result.tp2 == 106.0
     assert result.tp3 == 109.0
     assert result.take_profit == 109.0
+    print("  [PASS]")
+
+
+def test_stop_loss_calculator_uses_structure_stop_even_when_wider_than_atr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    print("\n=== 測試結構止損寬於 ATR 時仍優先使用結構位 ===")
+    calc = StopLossCalculator(db=None)
+    monkeypatch.setattr(
+        "core.risk.stop_loss.compute_structure_levels",
+        lambda *args, **kwargs: StructureLevels(
+            stop_loss=96.0,
+            tp1=102.0,
+            tp2=104.0,
+            tp3=None,
+            source="structure",
+        ),
+    )
+    df = pd.DataFrame({"open": [99.0], "high": [101.0], "low": [96.0], "close": [100.0]})
+    result = calc.compute(
+        entry_price=100.0,
+        atr=2.0,
+        direction="LONG",
+        symbol="XRPUSDT",
+        strategy_name="mean_reversion",
+        structure_df=df,
+    )
+    assert result.rejected is False
+    assert result.stop_loss == 96.0
+    print("  [PASS]")
+
+
+def test_stop_loss_calculator_uses_structure_stop_short_wider_than_atr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    print("\n=== 測試 SHORT 結構止損寬於 ATR 時仍使用結構位 ===")
+    calc = StopLossCalculator(db=None)
+    monkeypatch.setattr(
+        "core.risk.stop_loss.compute_structure_levels",
+        lambda *args, **kwargs: StructureLevels(
+            stop_loss=106.0,
+            tp1=97.0,
+            tp2=95.0,
+            tp3=None,
+            source="structure",
+        ),
+    )
+    df = pd.DataFrame({"open": [101.0], "high": [106.0], "low": [99.0], "close": [100.0]})
+    result = calc.compute(
+        entry_price=100.0,
+        atr=2.0,
+        direction="SHORT",
+        symbol="XRPUSDT",
+        strategy_name="mean_reversion",
+        structure_df=df,
+    )
+    assert result.rejected is False
+    assert result.stop_loss == 106.0
     print("  [PASS]")
 
 
@@ -518,8 +583,8 @@ def main():
     test_structure_stop_floor_mult_mapping()
     test_exit_profile_family_mapping()
     test_stop_loss_calculator_uses_structure_when_available()
-    test_stop_loss_calculator_applies_structure_floor_for_breakout_long()
-    test_stop_loss_calculator_applies_structure_floor_for_breakout_short()
+    test_stop_loss_calculator_prefers_structure_stop_for_breakout_long()
+    test_stop_loss_calculator_prefers_structure_stop_for_breakout_short()
     test_stop_loss_calculator_atr_fallback_unchanged_without_structure()
     test_daily_limits_checker()
     test_cooldown_checker()

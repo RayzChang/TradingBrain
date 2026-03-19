@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -131,6 +132,42 @@ def test_analyze_multi_timeframe_ignores_15m_in_direction_vote():
     assert analysis.details["15m"] == "BEARISH"
 
 
+def test_analyze_multi_timeframe_accepts_lean_alignment_with_reduced_confidence():
+    with patch("core.analysis.multi_timeframe.add_all_indicators", side_effect=lambda df: df), patch(
+        "core.analysis.multi_timeframe.get_trend_direction",
+        side_effect=lambda df: df.attrs["trend"],
+    ):
+        analysis = analyze_multi_timeframe(
+            {
+                "4h": _make_tf_df("LEAN_BULLISH"),
+                "1h": _make_tf_df("BULLISH"),
+                "15m": _make_tf_df("BULLISH"),
+            }
+        )
+
+    assert analysis.recommended_direction == "LONG"
+    assert analysis.alignment == TimeframeAlignment.ALIGNED_BULLISH
+    assert analysis.confidence == 0.6
+
+
+def test_analyze_multi_timeframe_accepts_single_side_direction_with_half_confidence():
+    with patch("core.analysis.multi_timeframe.add_all_indicators", side_effect=lambda df: df), patch(
+        "core.analysis.multi_timeframe.get_trend_direction",
+        side_effect=lambda df: df.attrs["trend"],
+    ):
+        analysis = analyze_multi_timeframe(
+            {
+                "4h": _make_tf_df("BULLISH"),
+                "1h": _make_tf_df("NEUTRAL"),
+                "15m": _make_tf_df("BULLISH"),
+            }
+        )
+
+    assert analysis.recommended_direction == "LONG"
+    assert analysis.alignment == TimeframeAlignment.ALIGNED_BULLISH
+    assert analysis.confidence == 0.5
+
+
 def test_analyze_multi_timeframe_returns_none_when_4h_and_1h_conflict():
     with patch("core.analysis.multi_timeframe.add_all_indicators", side_effect=lambda df: df), patch(
         "core.analysis.multi_timeframe.get_trend_direction",
@@ -188,6 +225,62 @@ def test_base_strategy_blocks_when_recommended_direction_is_missing():
     signals = strategy.evaluate_full(full)
 
     assert signals == []
+
+
+def test_base_strategy_scales_strength_by_mtf_confidence():
+    strategy = DummyTrendStrategy()
+    primary = _make_result()
+    full = FullAnalysis(
+        symbol="BTCUSDT",
+        primary_tf="15m",
+        single_tf_results={"15m": primary},
+        mtf=MTFAnalysis(
+            alignment=TimeframeAlignment.ALIGNED_BULLISH,
+            details={"4h": "LEAN_BULLISH", "1h": "BULLISH", "15m": "BULLISH"},
+            confidence=0.6,
+            recommended_direction="LONG",
+        ),
+        htf_rsi_confirmed=True,
+    )
+
+    signals = strategy.evaluate_full(full)
+
+    assert len(signals) == 1
+    assert signals[0].strength == 0.4
+    assert signals[0].indicators["mtf_confidence_scaled"] == 0.6
+
+
+def test_base_strategy_applies_penalty_in_non_preferred_regime():
+    strategy = DummyTrendStrategy()
+    strategy.allowed_regimes = [MarketRegime.TRENDING, MarketRegime.RANGING]
+    primary = _make_result(trend="NEUTRAL")
+    full = FullAnalysis(
+        symbol="BTCUSDT",
+        primary_tf="15m",
+        single_tf_results={"15m": primary},
+        mtf=MTFAnalysis(
+            alignment=TimeframeAlignment.ALIGNED_BULLISH,
+            details={"4h": "BULLISH", "1h": "BULLISH", "15m": "BULLISH"},
+            confidence=1.0,
+            recommended_direction="LONG",
+        ),
+        htf_rsi_confirmed=True,
+    )
+
+    with patch(
+        "core.strategy.base.MarketRegime.assess",
+        return_value=RegimeAssessment(
+            regime=MarketRegime.RANGING,
+            trend_score=0.8,
+            range_score=1.2,
+            volatility_score=0.2,
+        ),
+    ):
+        signals = strategy.evaluate_full(full)
+
+    assert len(signals) == 1
+    assert signals[0].strength == pytest.approx(0.45)
+    assert signals[0].indicators["regime_penalty"] is True
 
 
 def test_ranging_strategy_bypasses_strict_mtf_gate_when_htf_is_neutral():

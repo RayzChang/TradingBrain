@@ -46,6 +46,17 @@ class DatabaseManager:
                 ("trades", "tp1_price", "REAL"),
                 ("trades", "tp2_price", "REAL"),
                 ("trades", "tp3_price", "REAL"),
+                ("trades", "soft_stop_loss", "REAL"),
+                ("trades", "hard_stop_loss", "REAL"),
+                ("trades", "soft_stop_required_closes", "INTEGER NOT NULL DEFAULT 0"),
+                ("trades", "stop_zone_low", "REAL"),
+                ("trades", "stop_zone_high", "REAL"),
+                ("trades", "tp1_zone_low", "REAL"),
+                ("trades", "tp1_zone_high", "REAL"),
+                ("trades", "tp2_zone_low", "REAL"),
+                ("trades", "tp2_zone_high", "REAL"),
+                ("trades", "tp3_zone_low", "REAL"),
+                ("trades", "tp3_zone_high", "REAL"),
                 ("trades", "tp_stage", "INTEGER NOT NULL DEFAULT 0"),
                 ("trades", "original_quantity", "REAL"),
                 ("trades", "current_quantity", "REAL"),
@@ -417,3 +428,40 @@ class DatabaseManager:
             "UPDATE trades SET stop_loss=? WHERE id=?",
             (stop_loss, trade_id),
         )
+
+    def update_trade_protection(
+        self,
+        trade_id: int,
+        *,
+        soft_stop_loss: float | None = None,
+        hard_stop_loss: float | None = None,
+        soft_stop_required_closes: int | None = None,
+        highest_price: float | None = None,
+        lowest_price: float | None = None,
+    ) -> None:
+        """Persist soft/hard stop changes while keeping the legacy stop_loss field in sync."""
+        updates: list[str] = []
+        params: list[Any] = []
+
+        if soft_stop_loss is not None:
+            updates.append("soft_stop_loss=?")
+            params.append(soft_stop_loss)
+        if hard_stop_loss is not None:
+            updates.extend(["hard_stop_loss=?", "stop_loss=?"])
+            params.extend([hard_stop_loss, hard_stop_loss])
+        if soft_stop_required_closes is not None:
+            updates.append("soft_stop_required_closes=?")
+            params.append(soft_stop_required_closes)
+        if highest_price is not None:
+            updates.append("highest_price=?")
+            params.append(highest_price)
+        if lowest_price is not None:
+            updates.append("lowest_price=?")
+            params.append(lowest_price)
+
+        if not updates:
+            return
+
+        params.append(trade_id)
+        sql = f"UPDATE trades SET {', '.join(updates)} WHERE id=?"
+        self.execute(sql, tuple(params))

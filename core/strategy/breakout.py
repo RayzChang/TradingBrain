@@ -11,12 +11,12 @@ from core.strategy.base import BaseStrategy, MarketRegime, TradeSignal
 class BreakoutStrategy(BaseStrategy):
     """Trade breakouts only when momentum confirms the move."""
 
-    allowed_regimes = [MarketRegime.TRENDING]
+    allowed_regimes = [MarketRegime.TRENDING, MarketRegime.RANGING]
 
     def __init__(
         self,
         volume_mult: float = 1.5,
-        adx_rising_bars: int = 3,
+        adx_rising_bars: int = 2,
         skip_on_chop: bool = True,
         breakout_body_threshold: float = 0.35,
         short_rsi_floor: float = 34.0,

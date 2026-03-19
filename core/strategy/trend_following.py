@@ -11,16 +11,16 @@ from core.strategy.base import BaseStrategy, MarketRegime, TradeSignal
 class TrendFollowingStrategy(BaseStrategy):
     """Trade confirmed EMA crossovers in trending conditions."""
 
-    allowed_regimes = [MarketRegime.TRENDING]
+    allowed_regimes = [MarketRegime.TRENDING, MarketRegime.RANGING]
 
     def __init__(
         self,
-        adx_min: float = 25.0,
+        adx_min: float = 20.0,
         skip_on_chop: bool = True,
-        long_rsi_floor: float = 52.0,
-        long_rsi_ceiling: float = 68.0,
-        short_rsi_floor: float = 32.0,
-        short_rsi_ceiling: float = 48.0,
+        long_rsi_floor: float = 45.0,
+        long_rsi_ceiling: float = 72.0,
+        short_rsi_floor: float = 28.0,
+        short_rsi_ceiling: float = 55.0,
         long_bb_position_ceiling: float = 0.85,
         long_rsi_quality_ceiling: float = 63.0,
         long_rsi_bb_position_ceiling: float = 0.75,
@@ -145,7 +145,7 @@ class TrendFollowingStrategy(BaseStrategy):
         bullish_cross_age = self._get_cross_age_bars(df, bullish=True)
         bearish_cross_age = self._get_cross_age_bars(df, bullish=False)
 
-        if ema9_curr > ema21_curr and bullish_cross_age is not None and bullish_cross_age <= 5:
+        if ema9_curr > ema21_curr and bullish_cross_age is not None and bullish_cross_age <= 10:
             bullish_stack_ok = True
             bullish_di_ok = True
             bullish_momentum_ok = True
@@ -179,14 +179,12 @@ class TrendFollowingStrategy(BaseStrategy):
                     bullish_momentum_ok = bool(
                         self.long_rsi_floor <= rsi_curr <= self.long_rsi_ceiling
                         and macd_hist_curr > 0
-                        and macd_hist_curr >= macd_hist_prev
                     )
 
             if (
                 not bullish_stack_ok
                 or not bullish_di_ok
                 or not bullish_momentum_ok
-                or bullish_confluence < 1
             ):
                 logger.debug(
                     f"{self.name} LONG filtered: {symbol} {timeframe} "
@@ -277,7 +275,7 @@ class TrendFollowingStrategy(BaseStrategy):
                 )
                 logger.debug(f"{self.name} LONG signal: {symbol} {timeframe} ADX={adx:.1f} strength={strength:.2f}")
 
-        if ema9_curr < ema21_curr and bearish_cross_age is not None and bearish_cross_age <= 5:
+        if ema9_curr < ema21_curr and bearish_cross_age is not None and bearish_cross_age <= 10:
             bearish_stack_values = (
                 ema50_prev,
                 ema50_curr,
@@ -304,14 +302,12 @@ class TrendFollowingStrategy(BaseStrategy):
             bearish_momentum_ok = bool(
                 self.short_rsi_floor <= rsi_curr <= self.short_rsi_ceiling
                 and macd_hist_curr < 0
-                and macd_hist_curr <= macd_hist_prev
             )
 
             if (
                 not bearish_stack_ok
                 or not bearish_di_ok
                 or not bearish_momentum_ok
-                or bearish_confluence < 1
             ):
                 logger.debug(
                     f"{self.name} SHORT filtered: {symbol} {timeframe} "

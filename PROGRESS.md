@@ -1,5 +1,75 @@
 # TradingBrain V6 Progress
 
+## Runtime Tuning Override (2026-03-19 — Structure-First Exit Overhaul)
+
+- Exit management upgraded from single-line stops to dual-layer protection:
+  - `soft stop` = structure invalidation confirmed by candle closes
+  - `hard stop` = catastrophic protection beyond the invalidation zone
+- [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\structure_levels.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\structure_levels.py)
+  - structure levels now derive wider structure zones instead of single-point assumptions
+  - added stop-zone metadata and target-zone metadata
+  - `BTC / ETH`-style large-cap symbols now get materially wider structural breathing room through zone width logic
+- [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\stop_loss.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\stop_loss.py)
+  - stop planning now returns both `soft_stop_loss` and `hard_stop_loss`
+  - structure-based stops no longer get forced back to ATR-style stop placement
+  - risk/reward checks are evaluated against the logical `soft stop`, while exchange protection uses the `hard stop`
+- [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\execution\position_manager.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\execution\position_manager.py)
+  - TP1 no longer auto-moves breakout/trend trades straight to breakeven
+  - stop management now waits for confirmed soft-stop closes instead of a single wick touch
+  - trailing upgraded from pure ATR-following to recent swing-based structure updates
+  - hard stop still exits immediately when catastrophic protection is breached
+- [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\execution\execution_engine.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\execution\execution_engine.py)
+  - trades now persist `soft_stop_loss`, `hard_stop_loss`, stop-zone fields, and target-zone fields
+  - exchange-managed stop orders now use `hard_stop_loss`
+  - entry notifications now show both soft and hard stop levels
+- [`C:\Users\RAYZ\Desktop\coding\tradingbrain\database\models.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\database\models.py)
+- [`C:\Users\RAYZ\Desktop\coding\tradingbrain\database\db_manager.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\database\db_manager.py)
+  - database schema extended for soft/hard stop and zone metadata
+  - added protection update helper for stop progression and price extremes
+- Validation:
+  - `python -m pytest tests/test_risk.py -q` -> `21 passed`
+  - `python -m pytest tests/test_position_manager.py -q` -> `2 passed`
+  - `python -m pytest tests/test_execution.py -q` -> `7 passed`
+  - `python -m pytest -q` -> `87 passed`
+  - `python -m py_compile ...` -> passed
+
+## Runtime Tuning Override (2026-03-19)
+
+- Transitional-market MTF gate relaxed in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\analysis\multi_timeframe.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\analysis\multi_timeframe.py)
+  - added `LEAN_BULLISH / LEAN_BEARISH` normalization
+  - `4h` and `1h` can now contribute partial directional confidence instead of forcing `CONFLICTING`
+  - single-sided HTF direction now survives with reduced confidence instead of being discarded outright
+- Trend direction classification upgraded in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\analysis\indicators.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\analysis\indicators.py)
+  - `get_trend_direction()` now returns lean tiers before falling back to `NEUTRAL`
+- MTF hard gate simplified in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\base.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\base.py)
+  - non-ranging strategies only hard-block when there is no `recommended_direction`
+  - MTF confidence now scales signal strength instead of killing transitional setups outright
+  - `RANGING`-only bypass remains intact
+- Transitional-regime deadlock reduced in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\trend_following.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\trend_following.py) and [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\breakout.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\breakout.py)
+  - `trend_following` and `breakout` now allow both `TRENDING` and `RANGING`
+  - non-preferred regime execution in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\base.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\base.py) applies a `0.7x` strength penalty instead of hard-blocking
+- Mean reversion risk-reward threshold relaxed in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\exit_profiles.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\exit_profiles.py)
+  - `min_risk_reward: 1.2 -> 0.8`
+- Strategy entry gauntlet relaxed for weak/transitional markets
+  - [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\trend_following.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\trend_following.py)
+    - `adx_min: 25 -> 20`
+    - RSI windows widened to `45~72` for LONG and `28~55` for SHORT
+    - confluence no longer hard-gates entry
+    - MACD only needs directional sign, not rising/falling acceleration
+    - recent EMA cross window widened from `5` to `10` bars
+  - [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\mean_reversion.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\mean_reversion.py)
+    - reversal OR confirmation can now trigger entry
+    - single-confirmation entries receive a `0.75x` strength penalty
+  - [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\breakout.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\breakout.py)
+    - `adx_rising_bars: 3 -> 2`
+- Chop detector relaxed in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\analysis\chop_detector.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\analysis\chop_detector.py)
+  - `adx_threshold: 20 -> 17`
+  - `false_breakout_threshold: 4 -> 6`
+  - trigger score: `0.5 -> 0.6`
+  - cooldown: `60/30 -> 30/15`
+- Validation:
+  - `python -m pytest -q` -> `83 passed`
+
 ## Runtime Tuning Override (2026-03-18)
 
 - Structure TP floor protection added in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\stop_loss.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\stop_loss.py)

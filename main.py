@@ -357,7 +357,7 @@ class TradingBrain:
         # Telegram 啟動通知
         mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
         send_telegram_message(
-            f"🧠 TradingBrain V6 {mode_tag} 已啟動\n"
+            f"🧠 TradingBrain V7 {mode_tag} 已啟動\n"
             f"模式: {summary['mode_text']} | 幣種: {len(DEFAULT_WATCHLIST)}\n"
             f"策略: {summary['strategy_text']}\n"
             f"風控: {summary['risk_text']}\n"
@@ -1138,6 +1138,11 @@ class TradingBrain:
                     market_snapshot_json,
                     effective_risk_pct=round(risk_result.effective_risk_pct, 6),
                     sl_atr_mult=round(risk_result.sl_atr_mult, 4),
+                    soft_stop_loss=round(risk_result.soft_stop_loss, 4),
+                    hard_stop_loss=round(risk_result.hard_stop_loss, 4),
+                    soft_stop_required_closes=int(risk_result.soft_stop_required_closes),
+                    stop_zone_low=round(risk_result.stop_zone_low, 4),
+                    stop_zone_high=round(risk_result.stop_zone_high, 4),
                     structure_stop_floor_triggered=bool(
                         risk_result.structure_stop_floor_triggered
                     ),
@@ -1165,6 +1170,11 @@ class TradingBrain:
                 market_snapshot_json,
                 effective_risk_pct=round(risk_result.effective_risk_pct, 6),
                 sl_atr_mult=round(risk_result.sl_atr_mult, 4),
+                soft_stop_loss=round(risk_result.soft_stop_loss, 4),
+                hard_stop_loss=round(risk_result.hard_stop_loss, 4),
+                soft_stop_required_closes=int(risk_result.soft_stop_required_closes),
+                stop_zone_low=round(risk_result.stop_zone_low, 4),
+                stop_zone_high=round(risk_result.stop_zone_high, 4),
                 structure_stop_floor_triggered=bool(
                     risk_result.structure_stop_floor_triggered
                 ),
@@ -1263,7 +1273,10 @@ class TradingBrain:
             return
         symbols = {t["symbol"] for t in open_trades}
         prices: dict[str, float] = {}
+        recent_candles: dict[str, list[dict]] = {}
         for sym in symbols:
+            if self.ws_feed:
+                recent_candles[sym] = list(self.ws_feed.cache.get(sym.lower(), "1m")[-30:])
             # 優先從 WebSocket 快取取最新價
             latest = self.ws_feed.cache.get_latest(sym.lower(), "1m") if self.ws_feed else None
             if not latest and self.ws_feed:
@@ -1279,7 +1292,11 @@ class TradingBrain:
                     except Exception:
                         pass
         await run_position_check(
-            self.db, self.binance_client, prices, risk_manager=self.risk_manager
+            self.db,
+            self.binance_client,
+            prices,
+            recent_candles=recent_candles,
+            risk_manager=self.risk_manager,
         )
 
     async def run(self) -> None:

@@ -44,6 +44,17 @@ TF_HIERARCHY = ["1d", "4h", "1h", "15m", "5m"]
 DIRECTION_TFS = ["4h", "1h"]
 
 
+def _normalize_direction(raw: str | None) -> tuple[str | None, float]:
+    """Map raw trend labels into directional bias and confidence."""
+    mapping = {
+        "BULLISH": ("BULLISH", 1.0),
+        "LEAN_BULLISH": ("BULLISH", 0.6),
+        "BEARISH": ("BEARISH", 1.0),
+        "LEAN_BEARISH": ("BEARISH", 0.6),
+    }
+    return mapping.get(raw, (None, 0.0))
+
+
 def analyze_multi_timeframe(
     kline_data: dict[str, pd.DataFrame],
     entry_tf: str = "15m",
@@ -81,11 +92,10 @@ def analyze_multi_timeframe(
             recommended_direction=None,
         )
 
-    direction_4h = directional_details.get("4h")
-    direction_1h = directional_details.get("1h")
-    valid_directions = {"BULLISH", "BEARISH"}
+    dir_4h, conf_4h = _normalize_direction(directional_details.get("4h"))
+    dir_1h, conf_1h = _normalize_direction(directional_details.get("1h"))
 
-    if direction_4h not in valid_directions or direction_1h not in valid_directions:
+    if dir_4h is None and dir_1h is None:
         return MTFAnalysis(
             alignment=TimeframeAlignment.CONFLICTING,
             details=details,
@@ -93,23 +103,29 @@ def analyze_multi_timeframe(
             recommended_direction=None,
         )
 
-    if direction_4h != direction_1h:
+    if dir_4h and dir_1h and dir_4h != dir_1h:
         return MTFAnalysis(
             alignment=TimeframeAlignment.CONFLICTING,
             details=details,
             confidence=0.0,
             recommended_direction=None,
         )
+
+    agreed_dir = dir_4h or dir_1h
+    confidence = min(conf_4h, conf_1h) if dir_4h and dir_1h else (conf_4h or conf_1h)
+
+    if dir_4h is None or dir_1h is None:
+        confidence *= 0.5
 
     return MTFAnalysis(
         alignment=(
             TimeframeAlignment.ALIGNED_BULLISH
-            if direction_4h == "BULLISH"
+            if agreed_dir == "BULLISH"
             else TimeframeAlignment.ALIGNED_BEARISH
         ),
         details=details,
-        confidence=1.0,
-        recommended_direction="LONG" if direction_4h == "BULLISH" else "SHORT",
+        confidence=round(confidence, 2),
+        recommended_direction="LONG" if agreed_dir == "BULLISH" else "SHORT",
     )
 
 

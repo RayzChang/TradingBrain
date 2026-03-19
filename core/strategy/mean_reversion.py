@@ -99,7 +99,10 @@ class MeanReversionStrategy(BaseStrategy):
                 if candle_bonus.get("bearish", 0) > 0:
                     strength = max(strength - 0.1, 0.0)
 
-                if bullish_reversal and (has_bull_div or candle_bonus.get("bullish", 0) > 0):
+                has_bull_confirm = has_bull_div or candle_bonus.get("bullish", 0) > 0
+                if bullish_reversal or has_bull_confirm:
+                    if not (bullish_reversal and has_bull_confirm):
+                        strength = round(strength * 0.75, 4)
                     signals.append(
                         TradeSignal(
                             symbol=symbol,
@@ -144,7 +147,10 @@ class MeanReversionStrategy(BaseStrategy):
                 if candle_bonus.get("bullish", 0) > 0:
                     strength = max(strength - 0.1, 0.0)
 
-                if bearish_reversal and (has_bear_div or candle_bonus.get("bearish", 0) > 0):
+                has_bear_confirm = has_bear_div or candle_bonus.get("bearish", 0) > 0
+                if bearish_reversal or has_bear_confirm:
+                    if not (bearish_reversal and has_bear_confirm):
+                        strength = round(strength * 0.75, 4)
                     signals.append(
                         TradeSignal(
                             symbol=symbol,

@@ -208,6 +208,14 @@ def get_trend_direction(df: pd.DataFrame) -> str:
         return "BULLISH"
     elif ema_9 < ema_21 < ema_50:
         return "BEARISH"
+
+    close = latest.get("close")
+    if close is not None and not pd.isna(close):
+        if close > ema_50 and ema_9 > ema_50:
+            return "LEAN_BULLISH"
+        if close < ema_50 and ema_9 < ema_50:
+            return "LEAN_BEARISH"
+
     return "NEUTRAL"
 
 

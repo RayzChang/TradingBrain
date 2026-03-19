@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from loguru import logger
+import pandas as pd
 
 from core.execution.binance_client import BinanceFuturesClient
 from core.risk.exit_profiles import get_exit_profile, normalize_strategy_family
@@ -205,11 +206,119 @@ def _calc_total_pnl(trade: dict, final_price: float) -> float:
     return (entry - final_price) * original_qty
 
 
+def _default_soft_stop_required_closes(trade: dict) -> int:
+    return 1 if _is_mean_reversion_trade(trade) else 2
+
+
+def _catastrophic_buffer(reference_price: float, atr: float, family: str) -> float:
+    pct_floor = {
+        "breakout": 0.0025,
+        "trend_following": 0.002,
+        "mean_reversion": 0.0015,
+    }.get(family, 0.002)
+    atr_mult = {
+        "breakout": 0.6,
+        "trend_following": 0.45,
+        "mean_reversion": 0.25,
+    }.get(family, 0.4)
+    return max(abs(reference_price) * pct_floor, max(atr, 0.0) * atr_mult)
+
+
+def _derive_hard_stop_from_soft(soft_stop: float, side: str, atr: float, family: str) -> float:
+    buffer = _catastrophic_buffer(soft_stop, atr, family)
+    if side == "LONG":
+        return round(max(soft_stop - buffer, 0), 4)
+    return round(soft_stop + buffer, 4)
+
+
+def _is_better_stop(side: str, candidate: float | None, current: float | None) -> bool:
+    if candidate is None or candidate <= 0:
+        return False
+    if current is None or current <= 0:
+        return True
+    if side == "LONG":
+        return candidate > current
+    return candidate < current
+
+
+def _recent_structure_stop_from_candles(
+    candles: list[dict] | None,
+    side: str,
+    family: str,
+) -> float | None:
+    if not candles or len(candles) < 7:
+        return None
+
+    df = pd.DataFrame(candles[-30:]).copy()
+    if df.empty or "low" not in df.columns or "high" not in df.columns:
+        return None
+
+    for column in ("low", "high", "close"):
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    order = 2
+    buffer_pct = 0.0015 if family != "mean_reversion" else 0.001
+    if side == "LONG":
+        lows = df["low"].dropna().tolist()
+        if len(lows) < (order * 2 + 1):
+            return None
+        candidate = None
+        for idx in range(order, len(lows) - order):
+            value = lows[idx]
+            if all(value <= lows[idx - step] for step in range(1, order + 1)) and all(
+                value <= lows[idx + step] for step in range(1, order + 1)
+            ):
+                candidate = value
+        if candidate is None:
+            return None
+        return round(max(candidate * (1 - buffer_pct), 0), 4)
+
+    highs = df["high"].dropna().tolist()
+    if len(highs) < (order * 2 + 1):
+        return None
+    candidate = None
+    for idx in range(order, len(highs) - order):
+        value = highs[idx]
+        if all(value >= highs[idx - step] for step in range(1, order + 1)) and all(
+            value >= highs[idx + step] for step in range(1, order + 1)
+        ):
+            candidate = value
+    if candidate is None:
+        return None
+    return round(candidate * (1 + buffer_pct), 4)
+
+
+def _soft_stop_confirmed(
+    candles: list[dict] | None,
+    side: str,
+    soft_stop: float,
+    required_closes: int,
+) -> bool:
+    if not candles or soft_stop <= 0 or required_closes <= 0:
+        return False
+
+    closes: list[float] = []
+    for candle in candles[-required_closes:]:
+        close = candle.get("close")
+        try:
+            closes.append(float(close))
+        except (TypeError, ValueError):
+            return False
+    if len(closes) < required_closes:
+        return False
+
+    if side == "LONG":
+        return all(close < soft_stop for close in closes)
+    return all(close > soft_stop for close in closes)
+
+
 async def run_position_check(
     db: "DatabaseManager",
     client: BinanceFuturesClient | None,
     prices: dict[str, float],
     *,
+    recent_candles: dict[str, list[dict]] | None = None,
     risk_manager=None,
 ) -> None:
     """Apply TP/SL/trailing logic to all open trades using the latest prices."""
@@ -218,7 +327,12 @@ async def run_position_check(
         side = trade["side"]
         trade_id = trade["id"]
         entry = float(trade.get("entry_price", 0) or 0)
-        stop_loss = trade.get("stop_loss")
+        hard_stop = float(trade.get("hard_stop_loss") or trade.get("stop_loss") or 0)
+        soft_stop = float(trade.get("soft_stop_loss") or trade.get("stop_loss") or 0)
+        soft_stop_required = int(
+            trade.get("soft_stop_required_closes")
+            or _default_soft_stop_required_closes(trade)
+        )
         current_qty = float(trade.get("current_quantity") or trade.get("quantity", 0) or 0)
         original_qty = float(trade.get("original_quantity") or trade.get("quantity", 0) or 0)
         tp1 = trade.get("tp1_price")
@@ -229,7 +343,9 @@ async def run_position_check(
         lowest = float(trade.get("lowest_price") or entry)
         atr = float(trade.get("atr_at_entry") or 0)
         profile = _trade_exit_profile(trade)
+        family = _strategy_family(trade)
         is_mean_reversion = profile.tp2_final_exit
+        symbol_candles = (recent_candles or {}).get(symbol, [])
 
         current = float(prices.get(symbol) or 0)
         if current <= 0:
@@ -253,20 +369,37 @@ async def run_position_check(
                 new_qty = current_qty - close_qty
                 success = await _partial_close(db, client, trade, close_qty, current, "TP1")
                 if success:
-                    new_sl = entry
-                    db.update_trade_tp_stage(trade_id, 1, new_qty, new_sl)
-                    if price_updated:
-                        db.update_trade_trailing(
-                            trade_id,
-                            new_sl,
-                            highest_price=highest if side == "LONG" else None,
-                            lowest_price=lowest if side == "SHORT" else None,
-                        )
+                    candidate_soft = _recent_structure_stop_from_candles(
+                        symbol_candles,
+                        side,
+                        family,
+                    )
+                    new_soft = soft_stop
+                    if is_mean_reversion:
+                        new_soft = entry
+                    elif _is_better_stop(side, candidate_soft, soft_stop):
+                        new_soft = candidate_soft
+
+                    new_hard = _derive_hard_stop_from_soft(
+                        new_soft if new_soft > 0 else (soft_stop or entry),
+                        side,
+                        atr,
+                        family,
+                    )
+                    db.update_trade_tp_stage(trade_id, 1, new_qty, new_hard)
+                    db.update_trade_protection(
+                        trade_id,
+                        soft_stop_loss=new_soft,
+                        hard_stop_loss=new_hard,
+                        soft_stop_required_closes=soft_stop_required,
+                        highest_price=highest if side == "LONG" else None,
+                        lowest_price=lowest if side == "SHORT" else None,
+                    )
 
                     if _supports_exchange_protection(client):
                         await client.cancel_all_orders(symbol)
                         close_side = "SELL" if side == "LONG" else "BUY"
-                        await client.place_stop_loss(symbol, close_side, new_qty, new_sl)
+                        await client.place_stop_loss(symbol, close_side, new_qty, new_hard)
                         if tp2:
                             await client.place_take_profit(
                                 symbol,
@@ -279,14 +412,16 @@ async def run_position_check(
                         f"TP1 hit\n"
                         f"{symbol} {side} | close {tp1_close_pct:.0%} ({close_qty:.6f})\n"
                         f"剩餘倉位: {new_qty:.6f}\n"
-                        f"Move SL to entry: {entry:.4f}"
+                        f"Soft SL: {new_soft:.4f}\n"
+                        f"Hard SL: {new_hard:.4f}"
                     )
                     if tp2:
                         message += f"\nNext TP2: {tp2:.4f}"
                     send_telegram_message(message)
                     logger.info(f"TP1 hit: {symbol} {side}")
                     tp_stage = 1
-                    stop_loss = new_sl
+                    soft_stop = new_soft
+                    hard_stop = new_hard
                 continue
 
         if tp_stage == 1 and tp2:
@@ -315,33 +450,48 @@ async def run_position_check(
                             await _update_hwm(client, risk_manager)
                         continue
 
-                    new_sl = tp1 if tp1 else entry
-                    db.update_trade_tp_stage(trade_id, 2, new_qty, new_sl)
-                    if price_updated:
-                        db.update_trade_trailing(
-                            trade_id,
-                            new_sl,
-                            highest_price=highest if side == "LONG" else None,
-                            lowest_price=lowest if side == "SHORT" else None,
-                        )
+                    candidate_soft = _recent_structure_stop_from_candles(
+                        symbol_candles,
+                        side,
+                        family,
+                    )
+                    if side == "LONG":
+                        fallback_soft = max(soft_stop or 0, entry)
+                    else:
+                        fallback_soft = min(soft_stop or float("inf"), entry)
+                        if fallback_soft == float("inf"):
+                            fallback_soft = entry
+                    new_soft = candidate_soft if _is_better_stop(side, candidate_soft, soft_stop) else fallback_soft
+                    new_hard = _derive_hard_stop_from_soft(new_soft, side, atr, family)
+                    db.update_trade_tp_stage(trade_id, 2, new_qty, new_hard)
+                    db.update_trade_protection(
+                        trade_id,
+                        soft_stop_loss=new_soft,
+                        hard_stop_loss=new_hard,
+                        soft_stop_required_closes=soft_stop_required,
+                        highest_price=highest if side == "LONG" else None,
+                        lowest_price=lowest if side == "SHORT" else None,
+                    )
 
                     if _supports_exchange_protection(client):
                         await client.cancel_all_orders(symbol)
                         close_side = "SELL" if side == "LONG" else "BUY"
-                        await client.place_stop_loss(symbol, close_side, new_qty, new_sl)
+                        await client.place_stop_loss(symbol, close_side, new_qty, new_hard)
 
                     message = (
                         f"TP2 hit\n"
                         f"{symbol} {side} | close {profile.tp2_close_pct:.0%} ({close_qty:.6f})\n"
                         f"剩餘倉位: {new_qty:.6f}\n"
-                        f"Move SL to {new_sl:.4f}"
+                        f"Soft SL: {new_soft:.4f}\n"
+                        f"Hard SL: {new_hard:.4f}"
                     )
                     if tp3:
                         message += f"\nRemaining position trails toward TP3: {tp3:.4f}"
                     send_telegram_message(message)
                     logger.info(f"TP2 hit: {symbol} {side}")
                     tp_stage = 2
-                    stop_loss = new_sl
+                    soft_stop = new_soft
+                    hard_stop = new_hard
                 continue
 
         if tp_stage == 2 and tp3 and not is_mean_reversion:
@@ -355,83 +505,68 @@ async def run_position_check(
                     await _update_hwm(client, risk_manager)
                 continue
 
-        if tp_stage == 2 and atr > 0 and not is_mean_reversion:
-            if side == "LONG":
-                trailing_sl = highest - (atr * profile.tp2_trailing_atr_mult)
-                if trailing_sl > (stop_loss or 0):
-                    stop_loss = trailing_sl
-                    db.update_trade_trailing(trade_id, stop_loss, highest_price=highest)
-                    if _supports_exchange_protection(client):
-                        await client.cancel_all_orders(symbol)
-                        await client.place_stop_loss(symbol, "SELL", current_qty, stop_loss)
-                    logger.debug(
-                        f"Trailing SL updated: {symbol} LONG SL={stop_loss:.4f} "
-                        f"(highest={highest:.4f})"
-                    )
-                elif price_updated:
-                    db.update_trade_trailing(trade_id, stop_loss, highest_price=highest)
-            else:
-                trailing_sl = lowest + (atr * profile.tp2_trailing_atr_mult)
-                if trailing_sl < (stop_loss or float("inf")):
-                    stop_loss = trailing_sl
-                    db.update_trade_trailing(trade_id, stop_loss, lowest_price=lowest)
-                    if _supports_exchange_protection(client):
-                        await client.cancel_all_orders(symbol)
-                        await client.place_stop_loss(symbol, "BUY", current_qty, stop_loss)
-                    logger.debug(
-                        f"Trailing SL updated: {symbol} SHORT SL={stop_loss:.4f} "
-                        f"(lowest={lowest:.4f})"
-                    )
-                elif price_updated:
-                    db.update_trade_trailing(trade_id, stop_loss, lowest_price=lowest)
-
-        elif tp_stage == 1 and atr > 0 and not is_mean_reversion:
-            if side == "LONG":
-                trailing_sl = highest - (atr * profile.tp1_trailing_atr_mult)
-                if trailing_sl > (stop_loss or 0):
-                    stop_loss = trailing_sl
-                    db.update_trade_trailing(trade_id, stop_loss, highest_price=highest)
-                    if _supports_exchange_protection(client):
-                        await client.cancel_all_orders(symbol)
-                        await client.place_stop_loss(symbol, "SELL", current_qty, stop_loss)
-                    logger.debug(f"TP1 trailing SL updated: {symbol} LONG SL={stop_loss:.4f}")
-                elif price_updated:
-                    db.update_trade_trailing(trade_id, stop_loss, highest_price=highest)
-            else:
-                trailing_sl = lowest + (atr * profile.tp1_trailing_atr_mult)
-                if trailing_sl < (stop_loss or float("inf")):
-                    stop_loss = trailing_sl
-                    db.update_trade_trailing(trade_id, stop_loss, lowest_price=lowest)
-                    if _supports_exchange_protection(client):
-                        await client.cancel_all_orders(symbol)
-                        await client.place_stop_loss(symbol, "BUY", current_qty, stop_loss)
-                    logger.debug(
-                        f"TP1 trailing SL updated: {symbol} SHORT SL={stop_loss:.4f}"
-                    )
-                elif price_updated:
-                    db.update_trade_trailing(trade_id, stop_loss, lowest_price=lowest)
-
-        elif tp_stage == 0 and price_updated:
-            db.update_trade_trailing(
+        if tp_stage >= 1 and not is_mean_reversion:
+            candidate_soft = _recent_structure_stop_from_candles(
+                symbol_candles,
+                side,
+                family,
+            )
+            if _is_better_stop(side, candidate_soft, soft_stop):
+                soft_stop = candidate_soft
+                hard_stop = _derive_hard_stop_from_soft(soft_stop, side, atr, family)
+                db.update_trade_protection(
+                    trade_id,
+                    soft_stop_loss=soft_stop,
+                    hard_stop_loss=hard_stop,
+                    soft_stop_required_closes=soft_stop_required,
+                    highest_price=highest if side == "LONG" else None,
+                    lowest_price=lowest if side == "SHORT" else None,
+                )
+                if _supports_exchange_protection(client):
+                    await client.cancel_all_orders(symbol)
+                    close_side = "SELL" if side == "LONG" else "BUY"
+                    await client.place_stop_loss(symbol, close_side, current_qty, hard_stop)
+                logger.debug(
+                    f"Structure trailing updated: {symbol} {side} "
+                    f"soft={soft_stop:.4f} hard={hard_stop:.4f}"
+                )
+            elif price_updated:
+                db.update_trade_protection(
+                    trade_id,
+                    highest_price=highest if side == "LONG" else None,
+                    lowest_price=lowest if side == "SHORT" else None,
+                )
+        elif price_updated:
+            db.update_trade_protection(
                 trade_id,
-                stop_loss or 0,
                 highest_price=highest if side == "LONG" else None,
                 lowest_price=lowest if side == "SHORT" else None,
             )
 
-        if stop_loss:
-            sl_hit = (side == "LONG" and current <= stop_loss) or (
-                side == "SHORT" and current >= stop_loss
+        if hard_stop:
+            hard_hit = (side == "LONG" and current <= hard_stop) or (
+                side == "SHORT" and current >= hard_stop
             )
-            if sl_hit:
-                exit_reason = "STOP_LOSS"
+            if hard_hit:
+                exit_reason = "HARD_STOP"
                 if tp_stage == 1:
-                    exit_reason = "TRAILING_SL_AFTER_TP1"
+                    exit_reason = "HARD_STOP_AFTER_TP1"
                 elif tp_stage == 2:
-                    exit_reason = "TRAILING_SL_AFTER_TP2"
+                    exit_reason = "HARD_STOP_AFTER_TP2"
                 await _full_close(db, client, trade, current, exit_reason)
                 if risk_manager and hasattr(risk_manager, "update_equity_high_water_mark"):
                     await _update_hwm(client, risk_manager)
+                continue
+
+        if soft_stop and _soft_stop_confirmed(symbol_candles, side, soft_stop, soft_stop_required):
+            exit_reason = "SOFT_STOP"
+            if tp_stage == 1:
+                exit_reason = "SOFT_STOP_AFTER_TP1"
+            elif tp_stage == 2:
+                exit_reason = "SOFT_STOP_AFTER_TP2"
+            await _full_close(db, client, trade, current, exit_reason)
+            if risk_manager and hasattr(risk_manager, "update_equity_high_water_mark"):
+                await _update_hwm(client, risk_manager)
 
 
 async def _update_hwm(client, risk_manager) -> None:

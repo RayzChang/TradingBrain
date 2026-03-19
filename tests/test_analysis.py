@@ -86,6 +86,19 @@ def test_indicators():
     print("  [PASS]")
 
 
+def test_get_trend_direction_returns_lean_when_structure_is_transitional():
+    df = make_ohlcv(60, "up")
+    df = add_all_indicators(df)
+
+    latest_idx = df.index[-1]
+    df.loc[latest_idx, "ema_50"] = 100.0
+    df.loc[latest_idx, "ema_21"] = 99.7
+    df.loc[latest_idx, "ema_9"] = 101.0
+    df.loc[latest_idx, "close"] = 101.2
+
+    assert get_trend_direction(df) == "LEAN_BULLISH"
+
+
 def test_divergence():
     """測試背離偵測"""
     print("\n=== 測試背離偵測 ===")

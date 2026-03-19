@@ -86,10 +86,10 @@ def _price_displacement(df: pd.DataFrame, lookback: int = 15) -> float:
 def detect_chop(
     df: pd.DataFrame,
     lookback: int = 20,
-    adx_threshold: float = 20.0,
+    adx_threshold: float = 17.0,
     wick_threshold: float = 0.65,
     displacement_threshold: float = 0.15,
-    false_breakout_threshold: int = 4,
+    false_breakout_threshold: int = 6,
 ) -> ChopResult:
     """
     綜合偵測是否為絞肉機行情。
@@ -137,10 +137,10 @@ def detect_chop(
         reasons.append(f"假突破={fb_count}次 >= {false_breakout_threshold} (頻繁掃止損)")
 
     score = min(score, 1.0)
-    is_chop = score >= 0.5
+    is_chop = score >= 0.6
 
     if is_chop:
-        cooldown = 60 if score >= 0.75 else 30
+        cooldown = 30 if score >= 0.75 else 15
     else:
         cooldown = 0
 
