@@ -371,7 +371,7 @@ class MarketRegime:
         ):
             regime = MarketRegime.VOLATILE
             reasons = volatility_reasons or ["elevated volatility cluster"]
-        elif trend_score >= 2.2 and trend_score >= range_score + 0.45:
+        elif trend_score >= 1.8 and trend_score >= range_score + 0.3:
             regime = MarketRegime.TRENDING
             reasons = trend_reasons or ["trend score dominant"]
         elif range_score >= 1.6:
@@ -470,7 +470,8 @@ class BaseStrategy(ABC):
         regime = regime_assessment.regime
         if regime != MarketRegime.UNKNOWN and regime not in self.allowed_regimes:
             logger.debug(
-                f"{self.name} 跳過: 市場狀態 {regime} 不在允許範圍 {self.allowed_regimes}"
+                f"REGIME_GATE_BLOCK: {full.symbol} {self.name} "
+                f"market_regime={regime} allowed={self.allowed_regimes}"
             )
             return []
 
@@ -498,10 +499,14 @@ class BaseStrategy(ABC):
 
         if not is_ranging_only:
             if full.mtf is None or full.mtf.recommended_direction is None:
-                logger.info(
-                    f"MTF_GATE_BLOCK: {full.symbol} no recommended direction"
+                logger.debug(
+                    f"MTF_GATE_SOFT: {full.symbol} no recommended direction, "
+                    f"allowing with reduced strength"
                 )
-                return []
+                # V8: Allow through with reduced strength instead of hard block
+                for sig in signals:
+                    sig.strength = round(sig.strength * 0.5, 4)
+                    sig.indicators["mtf_no_direction_penalty"] = True
 
         # --- MTF 方向過濾 ---
         mtf_direction = None

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-TradingBrain V6 is a Binance Futures automated trading system (testnet/research-focused). It consists of a Python backend (trading engine + FastAPI) and a React/TypeScript frontend dashboard.
+TradingBrain V8 is a Binance Futures automated trading system (testnet/research-focused). It consists of a Python backend (trading engine + FastAPI), a React/TypeScript frontend dashboard, Telegram notifications, and structure-first trade management with soft/hard stops.
 
 ## Commands
 
@@ -63,8 +63,11 @@ Hard gates at 4h/1h block invalid setups before 15m analysis runs.
 
 Managed via `pending_entry` dict in the main orchestration loop.
 
-### Risk Layer (`core/risk/`)
-- Strategy-weighted position sizing with signal strength multiplier (1.3x cap)
+### Risk Layer (`core/risk/`) — V8 Fixed-Margin Model
+- **V8**: Fixed-margin position sizing ($100-500 per trade, scaled by coin max leverage)
+- Per-coin max leverage from Binance API (BTC 125x, ETH 100x, ATOM 20x, etc.)
+- Full account balance as collateral (CROSSED mode, no balance division)
+- **V8**: Dynamic stop-loss observation mode (wick detection vs confirmed breakdown)
 - Structure-first stop placement with ATR floor protection
 - Correlation blocking (e.g., BTC LONG + ETH LONG cannot coexist)
 - Regime hysteresis: 3+ bars minimum between regime switches

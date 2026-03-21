@@ -13,7 +13,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.risk.position_sizer import PositionSizer, PositionSizeResult, _parse_max_open_positions, _conviction_tier
+from core.risk.position_sizer import (
+    PositionSizer,
+    PositionSizeResult,
+    _conviction_tier,
+    _daily_pnl_modifier,
+    _parse_max_open_positions,
+)
 from core.risk.stop_loss import StopLossCalculator, StopLossResult
 from core.risk.exit_profiles import get_exit_profile, normalize_strategy_family
 from core.risk.structure_levels import (
@@ -65,15 +71,15 @@ def test_position_sizer():
     print("  [PASS]")
 
 
-def test_position_sizer_prefers_structure_stop_distance():
-    print("\n=== 測試 position sizing 優先使用結構止損距離 ===")
+def test_position_sizer_fixed_margin_ignores_stop_distance():
+    """V8: Fixed-margin model sizes by coin leverage tier, not stop distance."""
+    print("\n=== 測試 position sizing 固定保證金模型（不依賴止損距離） ===")
     sizer = PositionSizer(db=None)
     close_stop = sizer.compute(
         balance=1000,
         entry_price=100,
         atr=2.0,
         direction="LONG",
-        stop_loss_atr_mult=1.5,
         stop_loss_price=99,
     )
     far_stop = sizer.compute(
@@ -81,20 +87,23 @@ def test_position_sizer_prefers_structure_stop_distance():
         entry_price=100,
         atr=2.0,
         direction="LONG",
-        stop_loss_atr_mult=1.5,
         stop_loss_price=95,
     )
     assert close_stop.rejected is False
     assert far_stop.rejected is False
-    assert close_stop.size_usdt > far_stop.size_usdt
+    # V8: Both get the same fixed margin regardless of stop distance
+    assert close_stop.size_usdt == far_stop.size_usdt
+    assert close_stop.margin_usdt > 0
     print("  [PASS]")
 
 
 def test_position_sizer_applies_strategy_weight_and_signal_strength():
+    """V8: Fixed-margin model with conviction tiers and strategy weights."""
     print("\n=== 測試 position sizing 套用策略權重與信號強度 ===")
     sizer = PositionSizer(db=None)
+    # Use a large balance so margin isn't capped by max_margin_per_trade
     breakout = sizer.compute(
-        balance=1000,
+        balance=10000,
         entry_price=100,
         atr=2.0,
         direction="LONG",
@@ -103,7 +112,7 @@ def test_position_sizer_applies_strategy_weight_and_signal_strength():
         stop_loss_price=96.0,
     )
     trend = sizer.compute(
-        balance=1000,
+        balance=10000,
         entry_price=100,
         atr=2.0,
         direction="LONG",
@@ -112,7 +121,7 @@ def test_position_sizer_applies_strategy_weight_and_signal_strength():
         stop_loss_price=96.0,
     )
     mean_rev = sizer.compute(
-        balance=1000,
+        balance=10000,
         entry_price=100,
         atr=2.0,
         direction="LONG",
@@ -121,7 +130,7 @@ def test_position_sizer_applies_strategy_weight_and_signal_strength():
         stop_loss_price=96.0,
     )
     boosted = sizer.compute(
-        balance=1000,
+        balance=10000,
         entry_price=100,
         atr=2.0,
         direction="LONG",
@@ -133,12 +142,36 @@ def test_position_sizer_applies_strategy_weight_and_signal_strength():
     assert trend.rejected is False
     assert mean_rev.rejected is False
     assert boosted.rejected is False
-    assert breakout.effective_risk_pct == 0.026
-    assert trend.effective_risk_pct == 0.0208
-    assert mean_rev.effective_risk_pct == 0.0182
-    assert boosted.effective_risk_pct == 0.026
+    # V8: strategy_risk_weight is correctly assigned
+    assert breakout.strategy_risk_weight == 1.0
+    assert trend.strategy_risk_weight == 0.8
+    assert mean_rev.strategy_risk_weight == 0.7
+    # V8: margin_usdt reflects weight differences
+    assert breakout.margin_usdt > trend.margin_usdt > mean_rev.margin_usdt
+    # V8: same conviction tier, weight diff → size diff
     assert breakout.size_usdt > trend.size_usdt > mean_rev.size_usdt
+    # Boosted has same weight as breakout → same size (conviction caps at 1.3)
     assert boosted.size_usdt == breakout.size_usdt
+    # V8: conviction tier is A for strength >= 0.7
+    assert breakout.conviction_tier == "A"
+    assert boosted.conviction_tier == "A"
+    print("  [PASS]")
+
+
+def test_daily_pnl_modifier_uses_balance_relative_rhythm_thresholds():
+    """V8: Thresholds raised — 3%/5%/8% profit, 2%/4%/6% drawdown."""
+    print("\n=== 測試 daily rhythm modifier 依帳戶百分比分檔 ===")
+    params = {}  # V8: params are ignored, thresholds are hardcoded by balance %
+    # balance=5000 → profit_lock=150, profit_close=250, profit_stop=400
+    #                 dd_reduce=100, dd_focus=200, dd_stop=300
+    assert _daily_pnl_modifier(100.0, 5000.0, params) == 1.0   # below profit_lock
+    assert _daily_pnl_modifier(160.0, 5000.0, params) == 0.7   # >= profit_lock, < profit_close
+    assert _daily_pnl_modifier(260.0, 5000.0, params) == 0.4   # >= profit_close, < profit_stop
+    assert _daily_pnl_modifier(410.0, 5000.0, params) == 0.0   # >= profit_stop
+    assert _daily_pnl_modifier(-50.0, 5000.0, params) == 1.0   # below dd_reduce
+    assert _daily_pnl_modifier(-110.0, 5000.0, params) == 0.6  # >= dd_reduce, < dd_focus
+    assert _daily_pnl_modifier(-210.0, 5000.0, params) == 0.3  # >= dd_focus, < dd_stop
+    assert _daily_pnl_modifier(-310.0, 5000.0, params) == 0.0  # >= dd_stop
     print("  [PASS]")
 
 
@@ -237,8 +270,10 @@ def test_exit_profile_family_mapping() -> None:
     assert normalize_strategy_family("breakout_retest") == "breakout"
     assert get_exit_profile("breakout_retest").family == "breakout"
     assert get_exit_profile("trend_following").family == "trend_following"
-    assert get_exit_profile("mean_reversion").tp2_final_exit is True
-    assert get_exit_profile("mean_reversion").min_risk_reward == 0.8
+    # V8: mean_reversion now has tp3 (tp3_atr_mult=2.8), tp2_final_exit=False
+    assert get_exit_profile("mean_reversion").tp2_final_exit is False
+    assert get_exit_profile("mean_reversion").tp3_atr_mult == 2.8
+    assert get_exit_profile("mean_reversion").min_risk_reward == 1.0
     print("  [PASS]")
 
 
@@ -418,11 +453,13 @@ def test_stop_loss_calculator_prefers_structure_stop_for_breakout_long(
         min_risk_reward=1.4,
     )
     assert result.rejected is False
-    assert result.stop_loss == 1.3210
-    assert result.soft_stop_loss == 1.3210
-    assert result.hard_stop_loss == 1.3210
+    expected_stop = round(1.323 - (2.0 * 0.0088), 4)
+    assert result.stop_loss == expected_stop
+    assert result.soft_stop_loss == expected_stop
+    assert abs(1.323 - result.stop_loss) >= 2.0 * 0.0088
+    assert result.hard_stop_loss < result.soft_stop_loss
     assert result.sl_atr_mult == 2.0
-    assert result.structure_stop_floor_triggered is False
+    assert result.structure_stop_floor_triggered is True
     print("  [PASS]")
 
 
@@ -452,11 +489,13 @@ def test_stop_loss_calculator_prefers_structure_stop_for_breakout_short(
         min_risk_reward=0.7,
     )
     assert result.rejected is False
-    assert result.stop_loss == 100.5
-    assert result.soft_stop_loss == 100.5
-    assert result.hard_stop_loss == 100.5
+    expected_stop = 103.0
+    assert result.stop_loss == expected_stop
+    assert result.soft_stop_loss == expected_stop
+    assert abs(result.stop_loss - 99.0) >= 4.0
+    assert result.hard_stop_loss > result.soft_stop_loss
     assert result.sl_atr_mult == 2.0
-    assert result.structure_stop_floor_triggered is False
+    assert result.structure_stop_floor_triggered is True
     print("  [PASS]")
 
 
@@ -530,8 +569,8 @@ def test_stop_loss_calculator_uses_structure_stop_short_wider_than_atr(
         "core.risk.stop_loss.compute_structure_levels",
         lambda *args, **kwargs: StructureLevels(
             stop_loss=106.0,
-            tp1=97.0,
-            tp2=95.0,
+            tp1=96.0,
+            tp2=93.0,
             tp3=None,
             source="structure",
         ),
@@ -574,7 +613,7 @@ def main():
     print("=" * 60)
     test_parse_max_open_positions()
     test_position_sizer()
-    test_position_sizer_prefers_structure_stop_distance()
+    test_position_sizer_fixed_margin_ignores_stop_distance()
     test_position_sizer_applies_strategy_weight_and_signal_strength()
     test_stop_loss_calculator()
     test_stop_loss_calculator_mean_reversion_profile()

@@ -39,7 +39,7 @@ API_PORT = int(os.getenv("API_PORT", "8888"))
 
 
 # === Trading ===
-TRADING_INITIAL_BALANCE = float(os.getenv("TRADING_INITIAL_BALANCE", "300"))
+TRADING_INITIAL_BALANCE = float(os.getenv("TRADING_INITIAL_BALANCE", "5000"))
 TRADING_MODE = os.getenv("TRADING_MODE", "paper").strip().lower() or "paper"
 
 
@@ -98,7 +98,7 @@ DEFAULT_WATCHLIST = [
 MARGIN_TYPE = os.getenv("MARGIN_TYPE", "CROSSED").upper()
 if MARGIN_TYPE not in ("CROSSED", "ISOLATED"):
     MARGIN_TYPE = "CROSSED"
-DEFAULT_LEVERAGE = int(os.getenv("DEFAULT_LEVERAGE", "2"))
+DEFAULT_LEVERAGE = int(os.getenv("DEFAULT_LEVERAGE", "20"))
 
 
 def runtime_config_errors() -> list[str]:

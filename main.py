@@ -19,6 +19,7 @@ import json
 import signal
 import threading
 import time
+import zipfile
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +50,7 @@ from core.pipeline.liquidation import LiquidationMonitor
 from core.pipeline.veto_engine import VetoEngine
 from core.analysis.engine import AnalysisEngine
 from core.analysis.chop_detector import detect_chop
+from core.analysis.indicators import add_all_indicators, get_trend_direction
 from core.strategy.base import MarketRegime, TradeSignal
 from core.strategy.trend_following import TrendFollowingStrategy
 from core.strategy.mean_reversion import MeanReversionStrategy
@@ -243,6 +245,174 @@ class TradingBrain:
         base.update(updates)
         return base
 
+    @staticmethod
+    def _report_log_markers() -> dict[str, tuple[str, ...]]:
+        """Return text markers that can be counted from trading logs."""
+        return {
+            "mtf_gate_blocked": ("MTF_GATE_BLOCK:",),
+            "regime_gate_blocked": ("REGIME_GATE_BLOCK:", "跳過: 市場狀態"),
+        }
+
+    @staticmethod
+    def _format_count_map(counts: dict[str, int]) -> str:
+        """Render grouped counts as a compact comma-separated string."""
+        if not counts:
+            return "none"
+        ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        return ", ".join(f"{name}×{total}" for name, total in ordered)
+
+    def _read_trading_log_for_date(self, report_date: str) -> str:
+        """Read a plain or archived trading log for one local report date."""
+        plain_path = LOG_DIR / f"trading_{report_date}.log"
+        if plain_path.exists():
+            try:
+                return plain_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                return ""
+
+        zip_path = LOG_DIR / f"trading_{report_date}.log.zip"
+        if not zip_path.exists():
+            return ""
+
+        try:
+            with zipfile.ZipFile(zip_path) as archive:
+                member_names = [
+                    name for name in archive.namelist()
+                    if name.lower().endswith(".log")
+                ]
+                if not member_names:
+                    return ""
+                with archive.open(member_names[0]) as member:
+                    return member.read().decode("utf-8", errors="ignore")
+        except (OSError, zipfile.BadZipFile):
+            return ""
+
+    def _count_trading_log_markers(self, report_date: str) -> dict[str, int]:
+        """Count explicit diagnostic markers from the archived daily trading log."""
+        text = self._read_trading_log_for_date(report_date)
+        if not text:
+            return {key: 0 for key in self._report_log_markers()}
+
+        counts: dict[str, int] = {}
+        for key, patterns in self._report_log_markers().items():
+            counts[key] = sum(text.count(pattern) for pattern in patterns)
+        return counts
+
+    def _build_signal_decay_summary(
+        self,
+        *,
+        day_offset: int = -1,
+        report_date: str | None = None,
+    ) -> dict:
+        """Build the daily signal funnel from analysis logs plus text log markers."""
+        if self.db is None:
+            return {
+                "counts": {},
+                "bottleneck": {"stage": "unavailable", "blocked": 0},
+                "strategies": {"candidates": {}, "executed": {}},
+                "sides": {"candidates": {}, "executed": {}},
+            }
+
+        report_date = report_date or (
+            datetime.now(APP_TIMEZONE).date() + pd.Timedelta(days=day_offset)
+        ).isoformat()
+        action_counts = self.db.get_analysis_action_counts(
+            tz=APP_TIMEZONE,
+            day_offset=day_offset,
+        )
+        strategy_candidates = self.db.get_analysis_strategy_counts(
+            tz=APP_TIMEZONE,
+            day_offset=day_offset,
+            final_actions=("PENDING_RISK", "VETOED"),
+        )
+        strategy_executed = self.db.get_analysis_strategy_counts(
+            tz=APP_TIMEZONE,
+            day_offset=day_offset,
+            final_actions=("EXECUTED",),
+        )
+        side_candidates = self.db.get_analysis_signal_type_counts(
+            tz=APP_TIMEZONE,
+            day_offset=day_offset,
+            final_actions=("PENDING_RISK", "VETOED"),
+        )
+        side_executed = self.db.get_analysis_signal_type_counts(
+            tz=APP_TIMEZONE,
+            day_offset=day_offset,
+            final_actions=("EXECUTED",),
+        )
+        log_counts = self._count_trading_log_markers(report_date)
+
+        regime_gate_blocked = int(log_counts.get("regime_gate_blocked", 0))
+        mtf_gate_blocked = int(log_counts.get("mtf_gate_blocked", 0))
+        vetoed = int(action_counts.get("VETOED", 0))
+        pending_risk = int(action_counts.get("PENDING_RISK", 0))
+        candidates_total = regime_gate_blocked + mtf_gate_blocked + pending_risk + vetoed
+        regime_gate_passed = max(candidates_total - regime_gate_blocked, 0)
+        mtf_gate_passed = max(regime_gate_passed - mtf_gate_blocked, 0)
+
+        pending_created = int(action_counts.get("PENDING_TRIGGER", 0)) + int(
+            action_counts.get("BREAKOUT_PENDING", 0)
+        )
+        trigger_confirmed = int(action_counts.get("TRIGGER_CONFIRMED", 0)) + int(
+            action_counts.get("BREAKOUT_CONFIRMED", 0)
+        )
+        trigger_expired = int(action_counts.get("TRIGGER_EXPIRED", 0)) + int(
+            action_counts.get("BREAKOUT_EXPIRED", 0)
+        ) + int(action_counts.get("BREAKOUT_EXPIRED_TIMEOUT", 0))
+
+        counts = {
+            "candidate_signals": candidates_total,
+            "regime_gate_passed": regime_gate_passed,
+            "regime_gate_blocked": regime_gate_blocked,
+            "mtf_gate_passed": mtf_gate_passed,
+            "mtf_gate_blocked": mtf_gate_blocked,
+            "veto_passed": pending_risk,
+            "veto_blocked": vetoed,
+            "pending_created": pending_created,
+            "trigger_confirmed": trigger_confirmed,
+            "trigger_expired": trigger_expired,
+            "breakout_retest_hit": int(action_counts.get("BREAKOUT_RETEST_HIT", 0)),
+            "breakout_confirmed": int(action_counts.get("BREAKOUT_CONFIRMED", 0)),
+            "breakout_expired": int(action_counts.get("BREAKOUT_EXPIRED", 0))
+            + int(action_counts.get("BREAKOUT_EXPIRED_TIMEOUT", 0)),
+            "mtf_recheck_blocked": int(action_counts.get("MTF_RECHECK_BLOCK", 0)),
+            "risk_blocked": int(action_counts.get("RISK_BLOCKED", 0)),
+            "executed": int(action_counts.get("EXECUTED", 0)),
+            "exchange_rejected": int(action_counts.get("EXCHANGE_REJECTED", 0)),
+            "no_signal": int(action_counts.get("NO_SIGNAL", 0)),
+        }
+
+        bottleneck_candidates = {
+            "regime_gate": counts["regime_gate_blocked"],
+            "mtf_gate": counts["mtf_gate_blocked"],
+            "veto": counts["veto_blocked"],
+            "trigger_expired": counts["trigger_expired"],
+            "mtf_recheck": counts["mtf_recheck_blocked"],
+            "risk": counts["risk_blocked"],
+            "exchange": counts["exchange_rejected"],
+        }
+        bottleneck_stage, bottleneck_total = max(
+            bottleneck_candidates.items(),
+            key=lambda item: item[1],
+            default=("none", 0),
+        )
+
+        return {
+            "counts": counts,
+            "bottleneck": {
+                "stage": bottleneck_stage,
+                "blocked": bottleneck_total,
+            },
+            "strategies": {
+                "candidates": strategy_candidates,
+                "executed": strategy_executed,
+            },
+            "sides": {
+                "candidates": side_candidates,
+                "executed": side_executed,
+            },
+        }
+
     def _append_daily_report_log(self, report_payload: dict) -> None:
         """Persist daily summary snapshots for later strategy review."""
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -250,6 +420,9 @@ class TradingBrain:
         daily_dir.mkdir(parents=True, exist_ok=True)
 
         report_date = report_payload["report_date"]
+        signal_chain = report_payload.get("signal_chain", {})
+        signal_counts = signal_chain.get("counts", {})
+        bottleneck = signal_chain.get("bottleneck", {})
         text_lines = [
             "TradingBrain Daily Report",
             f"report_date: {report_payload['report_date']}",
@@ -260,6 +433,30 @@ class TradingBrain:
             f"open_positions: {report_payload['open_positions']}",
             f"exchange_balance: {report_payload['exchange_balance']}",
             f"generated_at: {report_payload['generated_at']}",
+            "",
+            "Signal Chain Summary",
+            f"candidate_signals: {signal_counts.get('candidate_signals', 0)}",
+            f"regime_gate_passed: {signal_counts.get('regime_gate_passed', 0)}",
+            f"regime_gate_blocked: {signal_counts.get('regime_gate_blocked', 0)}",
+            f"mtf_gate_passed: {signal_counts.get('mtf_gate_passed', 0)}",
+            f"mtf_gate_blocked: {signal_counts.get('mtf_gate_blocked', 0)}",
+            f"veto_passed: {signal_counts.get('veto_passed', 0)}",
+            f"veto_blocked: {signal_counts.get('veto_blocked', 0)}",
+            f"pending_created: {signal_counts.get('pending_created', 0)}",
+            f"trigger_confirmed: {signal_counts.get('trigger_confirmed', 0)}",
+            f"trigger_expired: {signal_counts.get('trigger_expired', 0)}",
+            f"mtf_recheck_blocked: {signal_counts.get('mtf_recheck_blocked', 0)}",
+            f"risk_blocked: {signal_counts.get('risk_blocked', 0)}",
+            f"executed: {signal_counts.get('executed', 0)}",
+            f"breakout_retest_hit: {signal_counts.get('breakout_retest_hit', 0)}",
+            f"breakout_confirmed: {signal_counts.get('breakout_confirmed', 0)}",
+            f"breakout_expired: {signal_counts.get('breakout_expired', 0)}",
+            f"bottleneck_stage: {bottleneck.get('stage', 'none')}",
+            f"bottleneck_blocked: {bottleneck.get('blocked', 0)}",
+            f"candidate_strategies: {self._format_count_map(signal_chain.get('strategies', {}).get('candidates', {}))}",
+            f"executed_strategies: {self._format_count_map(signal_chain.get('strategies', {}).get('executed', {}))}",
+            f"candidate_sides: {self._format_count_map(signal_chain.get('sides', {}).get('candidates', {}))}",
+            f"executed_sides: {self._format_count_map(signal_chain.get('sides', {}).get('executed', {}))}",
         ]
 
         daily_file = daily_dir / f"{report_date}.md"
@@ -354,7 +551,7 @@ class TradingBrain:
         # 6. 初始化 WebSocket 數據流
         self.ws_feed = BinanceWebSocketFeed(
             symbols=DEFAULT_WATCHLIST,
-            timeframes=["1m", "15m", "1h", "4h"],
+            timeframes=["1m", "5m", "15m", "1h", "4h"],
             on_kline=self._on_kline_closed,
         )
 
@@ -383,7 +580,7 @@ class TradingBrain:
         # Telegram 啟動通知
         mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
         send_telegram_message(
-            f"🧠 TradingBrain V7 {mode_tag} 已啟動\n"
+            f"🧠 TradingBrain V8 {mode_tag} 已啟動\n"
             f"模式: {summary['mode_text']} | 幣種: {len(DEFAULT_WATCHLIST)}\n"
             f"策略組合: {summary['strategy_text']}\n"
             f"{summary['strategy_lines']}\n"
@@ -442,7 +639,7 @@ class TradingBrain:
         """啟動時用 REST 拉取 15m/1h/4h 歷史 K 線灌入 cache，否則 MTF 要等數天才有足夠根數。"""
         fetcher = MarketDataFetcher()
         min_bars = 50
-        timeframes = ["15m", "1h", "4h"]
+        timeframes = ["5m", "15m", "1h", "4h"]
         try:
             for symbol in DEFAULT_WATCHLIST:
                 for tf in timeframes:
@@ -508,18 +705,18 @@ class TradingBrain:
                 seconds=SCHEDULER_CONFIG["position_check"]["interval_sec"],
                 description="持倉止損止盈檢查",
             )
-        # 心跳（靜默：僅異常時 LINE）
+        # 心跳（靜默：僅異常時 Telegram）
         self.scheduler.add_interval_task(
             "heartbeat", self._heartbeat,
             minutes=SCHEDULER_CONFIG["heartbeat"]["interval_min"],
-            description="LINE 心跳(靜默)",
+            description="Telegram 心跳(靜默)",
         )
 
-        # 監控快報 - 每 60 分鐘發一則 LINE（今日損益/筆數/未平倉），讓你被動收到監控數據
+        # 監控快報 - 每 60 分鐘發一則 Telegram（今日損益/筆數/未平倉），讓你被動收到監控數據
         self.scheduler.add_interval_task(
             "monitor_report", self._monitor_report,
             minutes=SCHEDULER_CONFIG["monitor_report"]["interval_min"],
-            description="監控快報(LINE)",
+            description="監控快報(Telegram)",
         )
 
         # 大腦熱重載 - 每 15 分鐘用 data/brain_state.json 覆寫策略參數，無需重啟
@@ -873,6 +1070,74 @@ class TradingBrain:
             ),
         )
 
+    @staticmethod
+    def _signal_grade(signal_strength: float) -> str:
+        if signal_strength >= 0.7:
+            return "A"
+        if signal_strength >= 0.5:
+            return "B"
+        return "C"
+
+    @staticmethod
+    def _pending_signal_strength(pending: PendingEntry) -> float:
+        if pending.signal_strength > 0:
+            return pending.signal_strength
+        return pending.signal.strength
+
+    @staticmethod
+    def _required_support_passes(
+        signal_strength: float,
+        total_checks: int,
+        default_passes: int,
+    ) -> int:
+        grade = TradingBrain._signal_grade(signal_strength)
+        if grade == "A":
+            return max(1, default_passes - 1)
+        if grade == "B":
+            return default_passes
+        return total_checks
+
+    @staticmethod
+    def _normalize_quick_mtf_direction(raw_direction: str | None) -> str | None:
+        if raw_direction in {"BULLISH", "LEAN_BULLISH"}:
+            return "LONG"
+        if raw_direction in {"BEARISH", "LEAN_BEARISH"}:
+            return "SHORT"
+        return None
+
+    def _quick_mtf_direction_check(self, symbol: str) -> str | None:
+        if self.ws_feed is None:
+            return None
+
+        directions: dict[str, str | None] = {}
+        for timeframe in ("4h", "1h"):
+            candles = self.ws_feed.cache.get(symbol.lower(), timeframe)
+            if len(candles) < 50:
+                directions[timeframe] = None
+                continue
+
+            df = pd.DataFrame(candles)
+            for col in ("open", "high", "low", "close", "volume"):
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.dropna(subset=["open", "high", "low", "close", "volume"])
+            if len(df) < 50:
+                directions[timeframe] = None
+                continue
+
+            enriched = add_all_indicators(df)
+            directions[timeframe] = self._normalize_quick_mtf_direction(
+                get_trend_direction(enriched)
+            )
+
+        dir_4h = directions.get("4h")
+        dir_1h = directions.get("1h")
+        if dir_4h and dir_1h:
+            if dir_4h != dir_1h:
+                return "CONFLICTING"
+            return dir_4h
+        return dir_4h or dir_1h or "NEUTRAL"
+
     def _process_breakout_retest_entry(
         self,
         pending: PendingEntry,
@@ -917,18 +1182,21 @@ class TradingBrain:
             )
 
         if pending.state == "retest_zone":
+            signal_grade = self._signal_grade(self._pending_signal_strength(pending))
             if pending.signal.signal_type == "LONG":
                 checks = {
-                    "close_above_breakout": close > pending.breakout_price,
                     "green_candle": close > open_price,
                     "above_ema9": ema9 is not None and close > float(ema9),
                 }
+                if signal_grade != "A":
+                    checks["close_above_breakout"] = close > pending.breakout_price
             else:
                 checks = {
-                    "close_below_breakout": close < pending.breakout_price,
                     "red_candle": close < open_price,
                     "below_ema9": ema9 is not None and close < float(ema9),
                 }
+                if signal_grade != "A":
+                    checks["close_below_breakout"] = close < pending.breakout_price
             failed = [name for name, ok in checks.items() if not ok]
             if not failed:
                 confirmed_signal = self._build_breakout_retest_signal(pending)
@@ -978,6 +1246,32 @@ class TradingBrain:
             return
 
         now = time.time()
+        expired_entries = [entry for entry in pending_list if entry.expires_at <= now]
+        for expired in expired_entries:
+            final_action = (
+                "BREAKOUT_EXPIRED_TIMEOUT"
+                if expired.signal.strategy_name == "breakout"
+                else "TRIGGER_EXPIRED"
+            )
+            snapshot_updates = {
+                "pending_expired_reason": "timeout",
+            }
+            if normalize_strategy_family(expired.signal.strategy_name) == "breakout":
+                snapshot_updates["breakout_retest_status"] = "expired"
+            self.db.insert_analysis_log({
+                "symbol": expired.signal.symbol,
+                "timeframe": "1m_trigger",
+                "strategy_name": expired.signal.strategy_name,
+                "signal_generated": 1,
+                "signal_type": expired.signal.signal_type,
+                "signal_strength": expired.signal.strength,
+                "veto_passed": 1,
+                "final_action": final_action,
+                "market_snapshot": self._snapshot_from_json(
+                    expired.market_snapshot_json,
+                    **snapshot_updates,
+                ),
+            })
         active_entries = [entry for entry in pending_list if entry.expires_at > now]
         if not active_entries:
             self._pending_entries.pop(symbol, None)
@@ -1022,6 +1316,21 @@ class TradingBrain:
                 )
                 remaining.append(pending)
                 continue
+            if pending.signal.strategy_name != "breakout":
+                self.db.insert_analysis_log({
+                    "symbol": signal_to_execute.symbol,
+                    "timeframe": "1m_trigger",
+                    "strategy_name": signal_to_execute.strategy_name,
+                    "signal_generated": 1,
+                    "signal_type": signal_to_execute.signal_type,
+                    "signal_strength": signal_to_execute.strength,
+                    "veto_passed": 1,
+                    "final_action": "TRIGGER_CONFIRMED",
+                    "market_snapshot": self._snapshot_from_json(
+                        pending_snapshot,
+                        trigger_reason=trigger_check.reason,
+                    ),
+                })
             trade_id = await self._run_risk_and_execute(
                 signal_to_execute,
                 float(one_min_result.df_enriched["close"].iloc[-1]),
@@ -1068,6 +1377,7 @@ class TradingBrain:
             )
 
         if strategy == "trend_following":
+            signal_strength = self._pending_signal_strength(pending)
             if direction == "LONG":
                 core_ok = close > pending.trigger_close
                 if not core_ok:
@@ -1086,7 +1396,14 @@ class TradingBrain:
                     "below_ema9": ema9 is not None and close < float(ema9),
                     "rsi_ok": rsi is not None and float(rsi) <= 50,
                 }
-            return _support_gate(checks, required_passes=2)
+            return _support_gate(
+                checks,
+                required_passes=self._required_support_passes(
+                    signal_strength,
+                    total_checks=len(checks),
+                    default_passes=2,
+                ),
+            )
 
         if strategy == "breakout":
             volume_ok = avg_volume > 0 and volume > avg_volume * 1.2
@@ -1106,6 +1423,7 @@ class TradingBrain:
             return EntryTriggerCheck(not failed, ", ".join(failed) if failed else "triggered")
 
         if strategy == "mean_reversion":
+            signal_strength = self._pending_signal_strength(pending)
             if direction == "LONG":
                 core_ok = close > pending.trigger_close
                 if not core_ok:
@@ -1122,7 +1440,14 @@ class TradingBrain:
                     "red_candle": close < open_price,
                     "below_ema9": ema9 is not None and close < float(ema9),
                 }
-            return _support_gate(checks, required_passes=1)
+            return _support_gate(
+                checks,
+                required_passes=self._required_support_passes(
+                    signal_strength,
+                    total_checks=len(checks),
+                    default_passes=1,
+                ),
+            )
 
         return EntryTriggerCheck(False, f"unsupported strategy: {strategy}")
 
@@ -1133,6 +1458,29 @@ class TradingBrain:
         atr: float,
         market_snapshot_json: str | None,
     ) -> int | None:
+        if normalize_strategy_family(sig.strategy_name) != "mean_reversion":
+            current_mtf = self._quick_mtf_direction_check(sig.symbol)
+            if current_mtf not in {None, "NEUTRAL", sig.signal_type}:
+                logger.warning(
+                    f"MTF_RECHECK_BLOCK: {sig.symbol} signal={sig.signal_type} "
+                    f"but current MTF={current_mtf}"
+                )
+                self.db.insert_analysis_log({
+                    "symbol": sig.symbol,
+                    "timeframe": "1m_trigger",
+                    "strategy_name": sig.strategy_name,
+                    "signal_generated": 1,
+                    "signal_type": sig.signal_type,
+                    "signal_strength": sig.strength,
+                    "veto_passed": 1,
+                    "final_action": "MTF_RECHECK_BLOCK",
+                    "market_snapshot": self._snapshot_from_json(
+                        market_snapshot_json,
+                        current_mtf_direction=current_mtf,
+                    ),
+                })
+                return None
+
         balance = TRADING_INITIAL_BALANCE
         if self.binance_client:
             try:
@@ -1143,8 +1491,20 @@ class TradingBrain:
         if entry_price <= 0 or atr <= 0:
             return None
 
+        # V8: Get per-coin max leverage for fixed-margin sizing
+        coin_max_lev = None
+        if self.binance_client:
+            try:
+                coin_max_lev = await self.binance_client.get_leverage_brackets(sig.symbol)
+            except Exception:
+                pass
+        if coin_max_lev is None:
+            from core.risk.position_sizer import get_coin_max_leverage
+            coin_max_lev = get_coin_max_leverage(sig.symbol)
+
         risk_result = self.risk_manager.evaluate(
-            sig, balance, entry_price, atr, len(open_trades)
+            sig, balance, entry_price, atr, len(open_trades),
+            coin_max_leverage=coin_max_lev,
         )
         if risk_result.passed:
             trade_id = await execute_trade(
@@ -1245,6 +1605,7 @@ class TradingBrain:
         trades_today = self.db.get_trades_today(tz=APP_TIMEZONE, day_offset=-1)
         daily_pnl = self.db.get_daily_pnl(tz=APP_TIMEZONE, day_offset=-1)
         open_trades = self.db.get_open_trades()
+        signal_chain = self._build_signal_decay_summary(day_offset=-1, report_date=report_date)
         exchange_balance = None
         if self.binance_client:
             try:
@@ -1261,16 +1622,31 @@ class TradingBrain:
             "open_positions": len(open_trades),
             "exchange_balance": exchange_balance,
             "generated_at": datetime.now(APP_TIMEZONE).isoformat(),
+            "signal_chain": signal_chain,
         }
         self._append_daily_report_log(report_payload)
 
+        counts = signal_chain.get("counts", {})
+        bottleneck = signal_chain.get("bottleneck", {})
         report = (
             f"📊 TradingBrain 每日報告\n"
             f"日期: {report_date} ({APP_TIMEZONE_NAME})\n"
             f"昨日交易: {len(trades_today)} 筆\n"
             f"昨日損益: {daily_pnl:+.2f} USDT\n"
             f"未平倉位: {len(open_trades)} 個\n"
-            f"模式: {TRADING_MODE}"
+            f"模式: {TRADING_MODE}\n"
+            f"信號鏈路: 候選 {counts.get('candidate_signals', 0)} → "
+            f"Regime通過 {counts.get('regime_gate_passed', 0)} → "
+            f"MTF通過 {counts.get('mtf_gate_passed', 0)} → "
+            f"Veto通過 {counts.get('veto_passed', 0)}\n"
+            f"Pending {counts.get('pending_created', 0)} / "
+            f"Trigger {counts.get('trigger_confirmed', 0)} / "
+            f"Recheck擋 {counts.get('mtf_recheck_blocked', 0)} / "
+            f"Risk擋 {counts.get('risk_blocked', 0)} / "
+            f"執行 {counts.get('executed', 0)}\n"
+            f"瓶頸: {bottleneck.get('stage', 'none')} "
+            f"(blocked {bottleneck.get('blocked', 0)})\n"
+            f"策略分布: {self._format_count_map(signal_chain.get('strategies', {}).get('executed', {}))}"
         )
         if exchange_balance is not None:
             report += f"\n交易所餘額: {exchange_balance:.2f} U"
@@ -1299,10 +1675,13 @@ class TradingBrain:
             return
         symbols = {t["symbol"] for t in open_trades}
         prices: dict[str, float] = {}
-        recent_candles: dict[str, list[dict]] = {}
+        recent_candles: dict[str, dict[str, list[dict]]] = {}
         for sym in symbols:
             if self.ws_feed:
-                recent_candles[sym] = list(self.ws_feed.cache.get(sym.lower(), "1m")[-30:])
+                recent_candles[sym] = {
+                    "1m": list(self.ws_feed.cache.get(sym.lower(), "1m")[-30:]),
+                    "5m": list(self.ws_feed.cache.get(sym.lower(), "5m")[-12:]),
+                }
             # 優先從 WebSocket 快取取最新價
             latest = self.ws_feed.cache.get_latest(sym.lower(), "1m") if self.ws_feed else None
             if not latest and self.ws_feed:
@@ -1317,13 +1696,19 @@ class TradingBrain:
                             prices[sym] = p
                     except Exception:
                         pass
-        await run_position_check(
-            self.db,
-            self.binance_client,
-            prices,
-            recent_candles=recent_candles,
-            risk_manager=self.risk_manager,
-        )
+        try:
+            await asyncio.wait_for(
+                run_position_check(
+                    self.db,
+                    self.binance_client,
+                    prices,
+                    recent_candles=recent_candles,
+                    risk_manager=self.risk_manager,
+                ),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            logger.error("position_check timed out after 30s")
 
     async def run(self) -> None:
         """主運行迴圈"""

@@ -245,6 +245,23 @@ class BinanceFuturesClient:
                 })
         return positions
 
+    async def get_leverage_brackets(self, symbol: str) -> int:
+        """Query Binance for the maximum leverage allowed for a symbol."""
+        try:
+            data = await self._request(
+                "GET",
+                "/fapi/v1/leverageBracket",
+                params={"symbol": symbol},
+                weight=1,
+            )
+            if data and isinstance(data, list):
+                brackets = data[0].get("brackets", [])
+                if brackets:
+                    return int(brackets[0].get("initialLeverage", 20))
+        except Exception as e:
+            logger.warning(f"get_leverage_brackets({symbol}) failed: {e}")
+        return 20
+
     async def set_leverage(self, symbol: str, leverage: int) -> None:
         """設定合約槓桿"""
         await self._request(

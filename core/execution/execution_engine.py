@@ -26,6 +26,67 @@ if TYPE_CHECKING:
     from database.db_manager import DatabaseManager
 
 
+def _is_test_notification(strategy_name: str, signal: "TradeSignal") -> bool:
+    strategy = (strategy_name or signal.strategy_name or "").strip().lower()
+    reason = (getattr(signal, "reason", "") or "").strip().lower()
+    return strategy in {"test", "smoke_test", "telegram_test"} or "test" in reason
+
+
+def _build_trade_open_message(
+    *,
+    is_test: bool,
+    version: str,
+    mode: str,
+    symbol: str,
+    side: str,
+    strategy_name: str,
+    strategy_family: str,
+    margin_cost: float,
+    size_usdt: float,
+    leverage: int,
+    entry_price: float,
+    soft_stop_loss: float,
+    hard_stop_loss: float,
+    soft_stop_required_closes: int,
+    tp1: float,
+    tp2: float,
+    tp3: float,
+) -> str:
+    if is_test:
+        return (
+            f"🧪 TradingBrain {version} 交易測試\n"
+            f"用途: Telegram / 下單鏈路驗證 ({mode})\n"
+            f"測試標的: {symbol} {side}\n"
+            f"策略標記: {strategy_name} ({strategy_family})\n"
+            f"保證金 {margin_cost:.0f}U | 名義倉位 {size_usdt:.0f}U ({leverage}x)\n"
+            f"進場: {entry_price:.4f}\n"
+            f"保護: Soft SL {soft_stop_loss:.4f} / Hard SL {hard_stop_loss:.4f} / "
+            f"Soft 失效需連續 {soft_stop_required_closes} 根收破\n"
+            f"TP1: {tp1:.4f} | TP2: {tp2:.4f} | TP3: {tp3:.4f}"
+        )
+
+    tp_line = f"TP1: {tp1:.4f} | TP2: {tp2:.4f}"
+    if tp3:
+        tp_line += f" | TP3: {tp3:.4f}"
+
+    return (
+        f"✅ TradingBrain {version} 開倉 ({mode})\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"幣種: {symbol} {side}\n"
+        f"策略: {strategy_name} ({strategy_family})\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"保證金: {margin_cost:.0f} U\n"
+        f"名義倉位: {size_usdt:.0f} U ({leverage}x)\n"
+        f"進場價: {entry_price:.4f}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"警戒止損: {soft_stop_loss:.4f}\n"
+        f"災難止損: {hard_stop_loss:.4f}\n"
+        f"止損模式: 觀察確認制\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"{tp_line}"
+    )
+
+
 def is_trading_enabled() -> bool:
     """
     ?臬?瑁??祕銝嚗estnet ?祕?歹???
@@ -67,6 +128,7 @@ async def execute_trade(
 
     strategy_name = strategy_name or signal.strategy_name
     strategy_family = normalize_strategy_family(strategy_name)
+    is_test_notification = _is_test_notification(strategy_name, signal)
     symbol = signal.symbol
     side_binance = "BUY" if signal.signal_type == "LONG" else "SELL"
     size_usdt = risk_result.size_usdt
@@ -143,14 +205,24 @@ async def execute_trade(
         }
         trade_id = db.insert_trade(trade_data)
         paper_margin = size_usdt / leverage if leverage else size_usdt
-        msg = (
-            f"✅ TradingBrain V7 模擬開倉\n"
-            f"{symbol} {signal.signal_type} | 策略 {strategy_name} ({strategy_family})\n"
-            f"保證金 {paper_margin:.0f}U | 名義倉位 {size_usdt:.0f}U ({leverage}x)\n"
-            f"進場: {entry_price:.2f}\n"
-            f"保護: Soft SL {soft_stop_loss:.4f} / Hard SL {hard_stop_loss:.4f} / "
-            f"Soft 失效需連續 {soft_stop_required_closes} 根收破\n"
-            f"TP1: {tp1:.4f} | TP2: {tp2:.4f} | TP3: {tp3:.4f}"
+        msg = _build_trade_open_message(
+            is_test=is_test_notification,
+            version="V8",
+            mode="Paper",
+            symbol=symbol,
+            side=signal.signal_type,
+            strategy_name=strategy_name,
+            strategy_family=strategy_family,
+            margin_cost=paper_margin,
+            size_usdt=size_usdt,
+            leverage=leverage,
+            entry_price=entry_price,
+            soft_stop_loss=soft_stop_loss,
+            hard_stop_loss=hard_stop_loss,
+            soft_stop_required_closes=soft_stop_required_closes,
+            tp1=tp1,
+            tp2=tp2,
+            tp3=tp3,
         )
         send_telegram_message(msg)
         logger.info(f"paper ???? trade_id={trade_id} {symbol} {signal.signal_type}")
@@ -249,14 +321,24 @@ async def execute_trade(
 
     mode = "Testnet" if BINANCE_TESTNET else "撖衣"
     margin_cost = size_usdt / leverage if leverage else size_usdt
-    open_msg = (
-        f"✅ TradingBrain V7 開倉 ({mode})\n"
-        f"{symbol} {signal.signal_type} | 策略 {strategy_name} ({strategy_family})\n"
-        f"保證金 {margin_cost:.0f} U | 名義倉位 {size_usdt:.0f} U ({leverage}x)\n"
-        f"進場: {entry_price:.4f}\n"
-        f"保護: Soft SL {soft_stop_loss:.4f} / Hard SL {hard_stop_loss:.4f} / "
-        f"Soft 失效需連續 {soft_stop_required_closes} 根收破\n"
-        f"TP1: {tp1:.4f} | TP2: {tp2:.4f} | TP3: {tp3:.4f}"
+    open_msg = _build_trade_open_message(
+        is_test=is_test_notification,
+        version="V8",
+        mode=mode,
+        symbol=symbol,
+        side=signal.signal_type,
+        strategy_name=strategy_name,
+        strategy_family=strategy_family,
+        margin_cost=margin_cost,
+        size_usdt=size_usdt,
+        leverage=leverage,
+        entry_price=entry_price,
+        soft_stop_loss=soft_stop_loss,
+        hard_stop_loss=hard_stop_loss,
+        soft_stop_required_closes=soft_stop_required_closes,
+        tp1=tp1,
+        tp2=tp2,
+        tp3=tp3,
     )
     send_telegram_message(open_msg)
 

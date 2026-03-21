@@ -183,12 +183,16 @@ async def _full_close(
         exit_reason=exit_reason,
     )
 
+    pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
     close_msg = (
-        f"TradingBrain close\n"
-        f"{symbol} {side} | {exit_reason}\n"
-        f"Entry: {entry:.4f} | Exit: {current_price:.4f}\n"
-        f"PnL: {total_pnl:+.2f} U ({pnl_pct:+.2f}%)\n"
-        f"剩餘倉位: 0"
+        f"{pnl_emoji} TradingBrain V8 平倉\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"幣種: {symbol} {side}\n"
+        f"原因: {exit_reason}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"進場: {entry:.4f}\n"
+        f"出場: {current_price:.4f}\n"
+        f"損益: {total_pnl:+.2f} U ({pnl_pct:+.2f}%)"
     )
     send_telegram_message(close_msg)
     logger.info(
@@ -208,6 +212,62 @@ def _calc_total_pnl(trade: dict, final_price: float) -> float:
 
 def _default_soft_stop_required_closes(trade: dict) -> int:
     return 1 if _is_mean_reversion_trade(trade) else 2
+
+
+def _analyze_stop_zone_behavior(
+    candles_1m: list[dict] | None,
+    candles_5m: list[dict] | None,
+    side: str,
+    soft_stop: float,
+    hard_stop: float,
+) -> str:
+    """Analyze price behavior near the stop zone.
+
+    V8 observation mode: instead of mechanical stop-loss, analyze whether
+    price is wicking through the zone or truly breaking down.
+
+    Returns: 'WICK_REVERSAL', 'CONSOLIDATING', 'CONFIRMED_BREAKDOWN', or 'NOT_IN_ZONE'
+    """
+    if not candles_5m or len(candles_5m) < 2:
+        # Not enough data, fall back to confirmed if 1m shows breach
+        if candles_1m and len(candles_1m) >= 2:
+            candles_5m = candles_1m[-3:]
+        else:
+            return "NOT_IN_ZONE"
+
+    recent = candles_5m[-3:]
+    bodies = []
+    for c in recent:
+        try:
+            o = float(c.get("open", 0))
+            cl = float(c.get("close", 0))
+            bodies.append((min(o, cl), max(o, cl)))
+        except (TypeError, ValueError):
+            return "NOT_IN_ZONE"
+
+    if not bodies:
+        return "NOT_IN_ZONE"
+
+    latest_body_low, latest_body_high = bodies[-1]
+
+    if side == "LONG":
+        # For LONG: stop zone breach = price below soft_stop
+        # Check if latest candle body recovered above soft_stop
+        if latest_body_low > soft_stop:
+            return "WICK_REVERSAL"
+        # Check if 2+ consecutive 5m bodies fully below soft_stop
+        below_count = sum(1 for low, high in bodies[-2:] if high < soft_stop)
+        if below_count >= 2:
+            return "CONFIRMED_BREAKDOWN"
+        return "CONSOLIDATING"
+    else:
+        # For SHORT: stop zone breach = price above soft_stop
+        if latest_body_high < soft_stop:
+            return "WICK_REVERSAL"
+        above_count = sum(1 for low, high in bodies[-2:] if low > soft_stop)
+        if above_count >= 2:
+            return "CONFIRMED_BREAKDOWN"
+        return "CONSOLIDATING"
 
 
 def _catastrophic_buffer(reference_price: float, atr: float, family: str) -> float:
@@ -289,7 +349,7 @@ def _recent_structure_stop_from_candles(
     return round(candidate * (1 + buffer_pct), 4)
 
 
-def _soft_stop_confirmed(
+def _check_consecutive_closes(
     candles: list[dict] | None,
     side: str,
     soft_stop: float,
@@ -313,12 +373,24 @@ def _soft_stop_confirmed(
     return all(close > soft_stop for close in closes)
 
 
+def _soft_stop_confirmed(
+    candles_1m: list[dict] | None,
+    candles_5m: list[dict] | None,
+    side: str,
+    soft_stop: float,
+    required_closes: int,
+) -> bool:
+    if _check_consecutive_closes(candles_1m, side, soft_stop, required_closes):
+        return True
+    return _check_consecutive_closes(candles_5m, side, soft_stop, 1)
+
+
 async def run_position_check(
     db: "DatabaseManager",
     client: BinanceFuturesClient | None,
     prices: dict[str, float],
     *,
-    recent_candles: dict[str, list[dict]] | None = None,
+    recent_candles: dict[str, dict[str, list[dict]] | list[dict]] | None = None,
     risk_manager=None,
 ) -> None:
     """Apply TP/SL/trailing logic to all open trades using the latest prices."""
@@ -345,7 +417,13 @@ async def run_position_check(
         profile = _trade_exit_profile(trade)
         family = _strategy_family(trade)
         is_mean_reversion = profile.tp2_final_exit
-        symbol_candles = (recent_candles or {}).get(symbol, [])
+        symbol_recent = (recent_candles or {}).get(symbol, {})
+        if isinstance(symbol_recent, list):
+            symbol_candles = symbol_recent
+            symbol_candles_5m: list[dict] = []
+        else:
+            symbol_candles = list(symbol_recent.get("1m", []))
+            symbol_candles_5m = list(symbol_recent.get("5m", []))
 
         current = float(prices.get(symbol) or 0)
         if current <= 0:
@@ -558,15 +636,41 @@ async def run_position_check(
                     await _update_hwm(client, risk_manager)
                 continue
 
-        if soft_stop and _soft_stop_confirmed(symbol_candles, side, soft_stop, soft_stop_required):
-            exit_reason = "SOFT_STOP"
-            if tp_stage == 1:
-                exit_reason = "SOFT_STOP_AFTER_TP1"
-            elif tp_stage == 2:
-                exit_reason = "SOFT_STOP_AFTER_TP2"
-            await _full_close(db, client, trade, current, exit_reason)
-            if risk_manager and hasattr(risk_manager, "update_equity_high_water_mark"):
-                await _update_hwm(client, risk_manager)
+        # V8: Dynamic stop-loss observation mode
+        # Instead of mechanical "N closes below soft stop = exit",
+        # analyze whether price is wicking or truly breaking down.
+        if soft_stop:
+            in_danger_zone = (
+                (side == "LONG" and current <= soft_stop)
+                or (side == "SHORT" and current >= soft_stop)
+            )
+            if in_danger_zone:
+                behavior = _analyze_stop_zone_behavior(
+                    symbol_candles,
+                    symbol_candles_5m,
+                    side,
+                    soft_stop,
+                    hard_stop,
+                )
+                if behavior == "CONFIRMED_BREAKDOWN":
+                    exit_reason = "OBSERVATION_STOP"
+                    if tp_stage == 1:
+                        exit_reason = "OBSERVATION_STOP_AFTER_TP1"
+                    elif tp_stage == 2:
+                        exit_reason = "OBSERVATION_STOP_AFTER_TP2"
+                    await _full_close(db, client, trade, current, exit_reason)
+                    if risk_manager and hasattr(risk_manager, "update_equity_high_water_mark"):
+                        await _update_hwm(client, risk_manager)
+                elif behavior == "WICK_REVERSAL":
+                    logger.debug(
+                        f"Observation: {symbol} {side} wick reversal detected at "
+                        f"soft_stop={soft_stop:.4f}, keeping position"
+                    )
+                elif behavior == "CONSOLIDATING":
+                    logger.debug(
+                        f"Observation: {symbol} {side} consolidating near "
+                        f"soft_stop={soft_stop:.4f}, monitoring..."
+                    )
 
 
 async def _update_hwm(client, risk_manager) -> None:

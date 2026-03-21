@@ -63,6 +63,7 @@ class RiskManager:
         entry_price: float,
         atr: float,
         open_trades_count: int,
+        coin_max_leverage: int | None = None,
     ) -> RiskCheckResult:
         """Run all pre-trade risk checks and return the executable risk profile."""
         daily_pnl = self.db.get_daily_pnl()
@@ -115,6 +116,7 @@ class RiskManager:
             signal_strength=signal.strength,
             stop_loss_price=sl_result.stop_loss,
             daily_pnl=daily_pnl,
+            coin_max_leverage=coin_max_leverage,
         )
         if size_result.rejected:
             return RiskCheckResult(
