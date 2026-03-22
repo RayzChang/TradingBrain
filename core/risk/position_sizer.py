@@ -1,4 +1,4 @@
-"""Position sizing with fixed-margin model and per-coin max leverage (V8)."""
+"""Position sizing with fixed-margin model, strategy leverage caps, and conviction tiers (V9)."""
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -98,7 +98,7 @@ def _daily_pnl_modifier(
 ) -> float:
     """Return a 0-1 multiplier that modulates risk based on daily rhythm.
 
-    V8: Thresholds raised significantly to match $50-200U/day profit target.
+    Thresholds raised significantly to match $50-200U/day profit target.
     """
     del params
 
@@ -160,7 +160,7 @@ def get_coin_max_leverage(symbol: str) -> int:
 
 class PositionSizer:
     """
-    Fixed-margin position sizing with per-coin max leverage (V8).
+    Fixed-margin position sizing with strategy leverage caps (V9).
 
     Sizing model:
     1. Determine margin per trade based on coin's max leverage tier.
@@ -223,7 +223,7 @@ class PositionSizer:
         """
         Compute the allowed position size in USDT using fixed-margin model.
 
-        V8: Position = margin * leverage, where leverage is the coin's max.
+        V9: Position = margin * min(coin_max_leverage, strategy_cap).
         Full account balance acts as collateral in CROSSED mode.
         """
         del direction, stop_loss_atr_mult
@@ -331,7 +331,7 @@ class PositionSizer:
             )
 
         logger.info(
-            f"Position sized (V8): tier={tier} conviction={conviction_mult:.2f} "
+            f"Position sized (V9): tier={tier} conviction={conviction_mult:.2f} "
             f"weight={strategy_weight} pnl_mod={pnl_mod:.2f} "
             f"margin={effective_margin:.1f}U leverage={leverage}x "
             f"notional={size_usdt:.0f}U"

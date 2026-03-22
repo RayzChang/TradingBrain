@@ -52,7 +52,7 @@ async def _run_soft_stop_after_two_closes() -> None:
         )
 
     full_close.assert_awaited_once()
-    # V8: observation mode uses OBSERVATION_STOP instead of SOFT_STOP
+    # V9: observation mode uses OBSERVATION_STOP instead of SOFT_STOP
     assert full_close.await_args.args[4] == "OBSERVATION_STOP"
 
 
@@ -150,7 +150,7 @@ async def _run_soft_stop_with_five_minute_backup() -> None:
         )
 
     full_close.assert_awaited_once()
-    # V8: observation mode uses OBSERVATION_STOP instead of SOFT_STOP
+    # V9: observation mode uses OBSERVATION_STOP instead of SOFT_STOP
     assert full_close.await_args.args[4] == "OBSERVATION_STOP"
 
 

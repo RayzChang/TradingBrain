@@ -72,7 +72,7 @@ def test_position_sizer():
 
 
 def test_position_sizer_fixed_margin_ignores_stop_distance():
-    """V8: Fixed-margin model sizes by coin leverage tier, not stop distance."""
+    """V9: Fixed-margin model sizes by coin leverage tier, not stop distance."""
     print("\n=== 測試 position sizing 固定保證金模型（不依賴止損距離） ===")
     sizer = PositionSizer(db=None)
     close_stop = sizer.compute(
@@ -91,14 +91,14 @@ def test_position_sizer_fixed_margin_ignores_stop_distance():
     )
     assert close_stop.rejected is False
     assert far_stop.rejected is False
-    # V8: Both get the same fixed margin regardless of stop distance
+    # V9: Both get the same fixed margin regardless of stop distance
     assert close_stop.size_usdt == far_stop.size_usdt
     assert close_stop.margin_usdt > 0
     print("  [PASS]")
 
 
 def test_position_sizer_applies_strategy_weight_and_signal_strength():
-    """V8: Fixed-margin model with conviction tiers and strategy weights."""
+    """V9: Fixed-margin model with conviction tiers and strategy weights."""
     print("\n=== 測試 position sizing 套用策略權重與信號強度 ===")
     sizer = PositionSizer(db=None)
     # Use a large balance so margin isn't capped by max_margin_per_trade
@@ -142,26 +142,26 @@ def test_position_sizer_applies_strategy_weight_and_signal_strength():
     assert trend.rejected is False
     assert mean_rev.rejected is False
     assert boosted.rejected is False
-    # V8: strategy_risk_weight is correctly assigned
+    # V9: strategy_risk_weight is correctly assigned
     assert breakout.strategy_risk_weight == 1.0
     assert trend.strategy_risk_weight == 0.8
     assert mean_rev.strategy_risk_weight == 0.7
-    # V8: margin_usdt reflects weight differences
+    # V9: margin_usdt reflects weight differences
     assert breakout.margin_usdt > trend.margin_usdt > mean_rev.margin_usdt
-    # V8: same conviction tier, weight diff → size diff
+    # V9: same conviction tier, weight diff → size diff
     assert breakout.size_usdt > trend.size_usdt > mean_rev.size_usdt
     # Boosted has same weight as breakout → same size (conviction caps at 1.3)
     assert boosted.size_usdt == breakout.size_usdt
-    # V8: conviction tier is A for strength >= 0.7
+    # V9: conviction tier is A for strength >= 0.7
     assert breakout.conviction_tier == "A"
     assert boosted.conviction_tier == "A"
     print("  [PASS]")
 
 
 def test_daily_pnl_modifier_uses_balance_relative_rhythm_thresholds():
-    """V8: Thresholds raised — 3%/5%/8% profit, 2%/4%/6% drawdown."""
+    """V9: Thresholds raised — 3%/5%/8% profit, 2%/4%/6% drawdown."""
     print("\n=== 測試 daily rhythm modifier 依帳戶百分比分檔 ===")
-    params = {}  # V8: params are ignored, thresholds are hardcoded by balance %
+    params = {}  # V9: params are ignored, thresholds are hardcoded by balance %
     # balance=5000 → profit_lock=150, profit_close=250, profit_stop=400
     #                 dd_reduce=100, dd_focus=200, dd_stop=300
     assert _daily_pnl_modifier(100.0, 5000.0, params) == 1.0   # below profit_lock
@@ -279,7 +279,7 @@ def test_exit_profile_family_mapping() -> None:
     assert normalize_strategy_family("breakout_retest") == "breakout"
     assert get_exit_profile("breakout_retest").family == "breakout"
     assert get_exit_profile("trend_following").family == "trend_following"
-    # V8: mean_reversion now has tp3 (tp3_atr_mult=2.8), tp2_final_exit=False
+    # V9: mean_reversion now has tp3 (tp3_atr_mult=2.8), tp2_final_exit=False
     assert get_exit_profile("mean_reversion").tp2_final_exit is False
     assert get_exit_profile("mean_reversion").tp3_atr_mult == 2.8
     assert get_exit_profile("mean_reversion").min_risk_reward == 1.5

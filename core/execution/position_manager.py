@@ -228,7 +228,7 @@ def _analyze_stop_zone_behavior(
 ) -> str:
     """Analyze price behavior near the stop zone.
 
-    V8 observation mode: instead of mechanical stop-loss, analyze whether
+    Observation mode: instead of mechanical stop-loss, analyze whether
     price is wicking through the zone or truly breaking down.
 
     Returns: 'WICK_REVERSAL', 'CONSOLIDATING', 'CONFIRMED_BREAKDOWN', or 'NOT_IN_ZONE'
@@ -629,7 +629,7 @@ async def run_position_check(
                     await _update_hwm(client, risk_manager)
                 continue
 
-        # V8: Dynamic stop-loss observation mode
+        # Dynamic stop-loss observation mode
         # Instead of mechanical "N closes below soft stop = exit",
         # analyze whether price is wicking or truly breaking down.
         if soft_stop:

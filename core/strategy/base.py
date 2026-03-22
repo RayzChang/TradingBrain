@@ -503,7 +503,7 @@ class BaseStrategy(ABC):
                     f"MTF_GATE_SOFT: {full.symbol} no recommended direction, "
                     f"allowing with reduced strength"
                 )
-                # V8: Allow through with reduced strength instead of hard block
+                # Allow through with reduced strength instead of hard block
                 for sig in signals:
                     sig.strength = round(sig.strength * 0.5, 4)
                     sig.indicators["mtf_no_direction_penalty"] = True

@@ -1547,7 +1547,7 @@ class TradingBrain:
         if entry_price <= 0 or atr <= 0:
             return None
 
-        # V8: Get per-coin max leverage for fixed-margin sizing
+        # Get per-coin max leverage for fixed-margin sizing
         coin_max_lev = None
         if self.binance_client:
             try:

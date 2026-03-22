@@ -198,7 +198,7 @@ class TelegramCommandHandler:
 
         msg = (
             f"📡 系統狀態\n"
-            f"🏷 V8 [{mode}] | 模式: {trade_mode}\n"
+            f"🏷 V9 [{mode}] | 模式: {trade_mode}\n"
             f"📦 持倉: {open_count}{bal_str}\n"
             f"🕐 {datetime.now(APP_TIMEZONE).strftime('%Y-%m-%d %H:%M')} ({APP_TIMEZONE_NAME})"
         )

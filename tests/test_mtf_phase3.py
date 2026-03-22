@@ -186,7 +186,7 @@ def test_analyze_multi_timeframe_returns_none_when_4h_and_1h_conflict():
 
 
 def test_base_strategy_allows_with_penalty_when_4h_direction_is_not_explicit():
-    """V8: no recommended direction applies a 0.5 penalty instead of hard block."""
+    """V9: no recommended direction applies a 0.5 penalty instead of hard block."""
     strategy = DummyTrendStrategy()
     primary = _make_result()
     full = FullAnalysis(
@@ -209,7 +209,7 @@ def test_base_strategy_allows_with_penalty_when_4h_direction_is_not_explicit():
 
 
 def test_base_strategy_allows_with_penalty_when_recommended_direction_is_missing():
-    """V8: no recommended direction applies a 0.5 penalty instead of hard block."""
+    """V9: no recommended direction applies a 0.5 penalty instead of hard block."""
     strategy = DummyTrendStrategy()
     primary = _make_result()
     full = FullAnalysis(
