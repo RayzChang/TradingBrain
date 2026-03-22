@@ -161,6 +161,21 @@ class DatabaseManager:
             local_end.astimezone(timezone.utc).isoformat(),
         )
 
+    @staticmethod
+    def _local_day_bounds_sqlite(
+        tz: ZoneInfo | None = None,
+        day_offset: int = 0,
+    ) -> tuple[str, str]:
+        """Return UTC bounds formatted for SQLite ``datetime('now')`` strings."""
+        tz = tz or APP_TIMEZONE
+        local_now = datetime.now(tz) + timedelta(days=day_offset)
+        local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        local_end = local_start + timedelta(days=1)
+        return (
+            local_start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            local_end.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
     def get_trades_today(
         self,
         *,
@@ -189,6 +204,70 @@ class DatabaseManager:
             (start_at, end_at),
         )
         return rows[0]["total"] if rows else 0.0
+
+    def get_analysis_action_counts(
+        self,
+        *,
+        tz: ZoneInfo | None = None,
+        day_offset: int = 0,
+    ) -> dict[str, int]:
+        """Return daily ``analysis_logs`` counts grouped by ``final_action``."""
+        start_at, end_at = self._local_day_bounds_sqlite(tz, day_offset)
+        rows = self.execute(
+            "SELECT final_action, COUNT(*) AS total "
+            "FROM analysis_logs "
+            "WHERE created_at >= ? AND created_at < ? "
+            "GROUP BY final_action",
+            (start_at, end_at),
+        )
+        return {row["final_action"]: int(row["total"]) for row in rows if row["final_action"]}
+
+    def get_analysis_strategy_counts(
+        self,
+        *,
+        tz: ZoneInfo | None = None,
+        day_offset: int = 0,
+        final_actions: tuple[str, ...] | None = None,
+    ) -> dict[str, int]:
+        """Return daily ``analysis_logs`` counts grouped by strategy name."""
+        start_at, end_at = self._local_day_bounds_sqlite(tz, day_offset)
+        sql = (
+            "SELECT strategy_name, COUNT(*) AS total "
+            "FROM analysis_logs "
+            "WHERE created_at >= ? AND created_at < ?"
+        )
+        params: list[Any] = [start_at, end_at]
+        if final_actions:
+            placeholders = ", ".join("?" for _ in final_actions)
+            sql += f" AND final_action IN ({placeholders})"
+            params.extend(final_actions)
+        sql += " GROUP BY strategy_name"
+        rows = self.execute(sql, tuple(params))
+        return {row["strategy_name"] or "unknown": int(row["total"]) for row in rows}
+
+    def get_analysis_signal_type_counts(
+        self,
+        *,
+        tz: ZoneInfo | None = None,
+        day_offset: int = 0,
+        final_actions: tuple[str, ...] | None = None,
+    ) -> dict[str, int]:
+        """Return daily ``analysis_logs`` counts grouped by signal side."""
+        start_at, end_at = self._local_day_bounds_sqlite(tz, day_offset)
+        sql = (
+            "SELECT signal_type, COUNT(*) AS total "
+            "FROM analysis_logs "
+            "WHERE created_at >= ? AND created_at < ? "
+            "AND signal_type IS NOT NULL"
+        )
+        params: list[Any] = [start_at, end_at]
+        if final_actions:
+            placeholders = ", ".join("?" for _ in final_actions)
+            sql += f" AND final_action IN ({placeholders})"
+            params.extend(final_actions)
+        sql += " GROUP BY signal_type"
+        rows = self.execute(sql, tuple(params))
+        return {row["signal_type"]: int(row["total"]) for row in rows if row["signal_type"]}
 
     def get_total_realized_pnl(self) -> float:
         """Return cumulative realized PnL across all closed trades."""

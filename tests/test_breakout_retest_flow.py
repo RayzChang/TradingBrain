@@ -38,6 +38,28 @@ def _make_primary_result() -> SimpleNamespace:
     )
 
 
+def _make_short_primary_result() -> SimpleNamespace:
+    df = pd.DataFrame(
+        [
+            {
+                "open_time": pd.Timestamp("2026-03-14 10:15:00"),
+                "open": 100.0,
+                "high": 100.3,
+                "low": 98.9,
+                "close": 99.0,
+                "bb_upper": 101.5,
+                "bb_lower": 99.5,
+                "atr": 1.8,
+            }
+        ]
+    )
+    return SimpleNamespace(
+        symbol="BTCUSDT",
+        df_enriched=df,
+        indicators={"atr": 1.8},
+    )
+
+
 def _make_one_min_result(
     *,
     open_price: float,
@@ -88,6 +110,35 @@ async def _queue_breakout_pending_entry() -> None:
 
 def test_queue_breakout_pending_entry():
     asyncio.run(_queue_breakout_pending_entry())
+
+
+async def _queue_breakout_pending_entry_short() -> None:
+    brain = TradingBrain()
+    brain.db = MagicMock()
+    signal = TradeSignal(
+        symbol="BTCUSDT",
+        timeframe="15m",
+        signal_type="SHORT",
+        strength=0.68,
+        strategy_name="breakout",
+        indicators={},
+        reason="test breakout short",
+    )
+
+    await brain._queue_pending_entries([signal], _make_short_primary_result(), "{}")
+
+    pending = brain._pending_entries["BTCUSDT"][0]
+    assert pending.breakout_price == 99.5
+    assert pending.expire_bars == brain.BREAKOUT_RETEST_EXPIRE_BARS
+    assert pending.signal_strength == signal.strength
+    assert pending.retest_zone_low < pending.breakout_price < pending.retest_zone_high
+
+    (log_payload,) = brain.db.insert_analysis_log.call_args[0]
+    assert log_payload["final_action"] == "BREAKOUT_PENDING"
+
+
+def test_queue_breakout_pending_entry_short():
+    asyncio.run(_queue_breakout_pending_entry_short())
 
 
 def test_breakout_retest_confirmed_same_bar():
@@ -193,3 +244,57 @@ def test_breakout_retest_expires_after_three_bars():
 
     (log_payload,) = brain.db.insert_analysis_log.call_args[0]
     assert log_payload["final_action"] == "BREAKOUT_EXPIRED"
+
+
+def test_breakout_retest_short_confirmed_same_bar():
+    brain = TradingBrain()
+    brain.db = MagicMock()
+    pending = PendingEntry(
+        signal=TradeSignal(
+            symbol="BTCUSDT",
+            timeframe="15m",
+            signal_type="SHORT",
+            strength=0.76,
+            strategy_name="breakout",
+            indicators={},
+            reason="breakout setup short",
+        ),
+        market_snapshot_json="{}",
+        setup_time=0.0,
+        expires_at=9999999999.0,
+        trigger_high=100.3,
+        trigger_low=98.9,
+        trigger_close=99.0,
+        atr=1.8,
+        structure_df=None,
+        breakout_price=99.5,
+        breakout_bar_time="2026-03-14T10:15:00",
+        expire_bars=3,
+        signal_strength=0.76,
+        retest_zone_low=99.15,
+        retest_zone_high=99.85,
+    )
+
+    one_min_result = _make_one_min_result(
+        open_price=99.7,
+        high=99.8,
+        low=99.0,
+        close=99.2,
+        ema9=99.6,
+    )
+
+    next_pending, trigger_check, confirmed_signal = brain._process_breakout_retest_entry(
+        pending,
+        one_min_result,
+    )
+
+    assert next_pending is None
+    assert trigger_check.triggered is True
+    assert confirmed_signal is not None
+    assert confirmed_signal.strategy_name == "breakout_retest"
+    assert confirmed_signal.signal_type == "SHORT"
+
+    logged_actions = [
+        call.args[0]["final_action"] for call in brain.db.insert_analysis_log.call_args_list
+    ]
+    assert logged_actions == ["BREAKOUT_RETEST_HIT", "BREAKOUT_CONFIRMED"]

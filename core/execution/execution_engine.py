@@ -17,6 +17,7 @@ from config.settings import (
     TRADING_MODE,
 )
 from core.execution.binance_client import BinanceFuturesClient
+from core.logger_setup import console, fmt_price
 from core.risk.exit_profiles import get_exit_profile, normalize_strategy_family
 from notifications.telegram_notify import send_telegram_message
 
@@ -52,37 +53,25 @@ def _build_trade_open_message(
     tp2: float,
     tp3: float,
 ) -> str:
+    side_emoji = "🟢" if side == "LONG" else "🔴"
+    tp_line = f"🎯 {fmt_price(tp1)} / {fmt_price(tp2)}"
+    if tp3:
+        tp_line += f" / {fmt_price(tp3)}"
+
     if is_test:
         return (
-            f"🧪 TradingBrain {version} 交易測試\n"
-            f"用途: Telegram / 下單鏈路驗證 ({mode})\n"
-            f"測試標的: {symbol} {side}\n"
-            f"策略標記: {strategy_name} ({strategy_family})\n"
-            f"保證金 {margin_cost:.0f}U | 名義倉位 {size_usdt:.0f}U ({leverage}x)\n"
-            f"進場: {entry_price:.4f}\n"
-            f"保護: Soft SL {soft_stop_loss:.4f} / Hard SL {hard_stop_loss:.4f} / "
-            f"Soft 失效需連續 {soft_stop_required_closes} 根收破\n"
-            f"TP1: {tp1:.4f} | TP2: {tp2:.4f} | TP3: {tp3:.4f}"
+            f"🧪 {symbol} {side_emoji} {side} 測試 [{mode}]\n"
+            f"📋 {strategy_name} | 💰 {margin_cost:.0f}U × {leverage}x = {size_usdt:.0f}U\n"
+            f"📍 入場 {entry_price:.4f}\n"
+            f"🛡 SL {soft_stop_loss:.4f} / {hard_stop_loss:.4f}\n"
+            f"{tp_line}"
         )
 
-    tp_line = f"TP1: {tp1:.4f} | TP2: {tp2:.4f}"
-    if tp3:
-        tp_line += f" | TP3: {tp3:.4f}"
-
     return (
-        f"✅ TradingBrain {version} 開倉 ({mode})\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"幣種: {symbol} {side}\n"
-        f"策略: {strategy_name} ({strategy_family})\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"保證金: {margin_cost:.0f} U\n"
-        f"名義倉位: {size_usdt:.0f} U ({leverage}x)\n"
-        f"進場價: {entry_price:.4f}\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"警戒止損: {soft_stop_loss:.4f}\n"
-        f"災難止損: {hard_stop_loss:.4f}\n"
-        f"止損模式: 觀察確認制\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
+        f"✅ {symbol} {side_emoji} {side} 開倉 [{mode}]\n"
+        f"📋 {strategy_name} | 💰 {margin_cost:.0f}U × {leverage}x = {size_usdt:.0f}U\n"
+        f"📍 入場 {entry_price:.4f}\n"
+        f"🛡 SL {soft_stop_loss:.4f} / {hard_stop_loss:.4f} (觀察制)\n"
         f"{tp_line}"
     )
 
@@ -225,7 +214,16 @@ async def execute_trade(
             tp3=tp3,
         )
         send_telegram_message(msg)
-        logger.info(f"paper ???? trade_id={trade_id} {symbol} {signal.signal_type}")
+        logger.info(f"paper 開倉 trade_id={trade_id} {symbol} {signal.signal_type}")
+        side_icon = "🟢" if signal.signal_type == "LONG" else "🔴"
+        console(
+            f"✅ {symbol} {side_icon} {signal.signal_type} 開倉！{strategy_name} | "
+            f"{paper_margin:.0f}U × {leverage}x = {size_usdt:.0f}U"
+        )
+        console(
+            f"   📍 入場 {fmt_price(entry_price)} | 🛡 SL {fmt_price(soft_stop_loss)}/{fmt_price(hard_stop_loss)} | "
+            f"🎯 {fmt_price(tp1)}/{fmt_price(tp2)}/{fmt_price(tp3)}"
+        )
         return trade_id
 
     if not is_trading_enabled():
@@ -318,8 +316,17 @@ async def execute_trade(
     }
     trade_id = db.insert_trade(trade_data)
     logger.info(f"交易建立完成: trade_id={trade_id} {symbol} {signal.signal_type} orderId={order_id}")
+    side_icon = "🟢" if signal.signal_type == "LONG" else "🔴"
+    console(
+        f"✅ {symbol} {side_icon} {signal.signal_type} 開倉！{strategy_name} | "
+        f"{size_usdt / leverage if leverage else size_usdt:.0f}U × {leverage}x = {size_usdt:.0f}U"
+    )
+    console(
+        f"   📍 入場 {fmt_price(entry_price)} | 🛡 SL {fmt_price(soft_stop_loss)}/{fmt_price(hard_stop_loss)} | "
+        f"🎯 {fmt_price(tp1)}/{fmt_price(tp2)}/{fmt_price(tp3)}"
+    )
 
-    mode = "Testnet" if BINANCE_TESTNET else "撖衣"
+    mode = "Testnet" if BINANCE_TESTNET else "實盤"
     margin_cost = size_usdt / leverage if leverage else size_usdt
     open_msg = _build_trade_open_message(
         is_test=is_test_notification,

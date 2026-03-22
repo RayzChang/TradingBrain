@@ -7,7 +7,7 @@ from loguru import logger
 
 from core.risk.cooldown import CooldownChecker
 from core.risk.daily_limits import DailyLimitsChecker
-from core.risk.position_sizer import PositionSizer
+from core.risk.position_sizer import PositionSizer, get_strategy_leverage_cap, get_coin_max_leverage
 from core.risk.stop_loss import StopLossCalculator
 
 if TYPE_CHECKING:
@@ -91,6 +91,10 @@ class RiskManager:
                 details={"stage": "max_positions"},
             )
 
+        # 預先算出策略槓桿上限，傳給 SL 計算做手續費感知 TP 地板
+        _coin_lev = coin_max_leverage or get_coin_max_leverage(signal.symbol)
+        effective_leverage = min(_coin_lev, get_strategy_leverage_cap(signal.strategy_name))
+
         # Exits come first so sizing can use the actual stop-loss distance.
         sl_result = self.stop_loss_calc.compute(
             entry_price=entry_price,
@@ -99,6 +103,7 @@ class RiskManager:
             symbol=signal.symbol,
             strategy_name=signal.strategy_name,
             structure_df=signal.indicators.get("_structure_df"),
+            leverage=effective_leverage,
         )
         if sl_result.rejected:
             return RiskCheckResult(

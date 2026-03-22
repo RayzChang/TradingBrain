@@ -1,4 +1,120 @@
-# TradingBrain V6 Progress
+# TradingBrain Progress
+
+## V9 Risk Overhaul (2026-03-22)
+
+### Problem
+OP 均值回歸 50x 槓桿、TP1 只有 0.24%（賺 2.37U），連手續費都不夠付。倉位太小（64U 保證金），槓桿太高，TP 太近。
+
+### Changes
+1. **策略槓桿上限** — `position_sizer.py`
+   - Trend Following: 20x / Breakout: 25x / Mean Reversion: 15x
+   - `leverage = min(coin_max_leverage, strategy_cap)`
+   - 不再出現 OP 50x、BTC 125x 的瘋狂槓桿
+
+2. **C 級信號不開倉** — `position_sizer.py`
+   - 信心度 < 0.5（C tier）直接 reject
+   - 系統自己都不確定的訊號不值得花錢試
+
+3. **均值回歸最低風報比 1.0 → 1.5** — `exit_profiles.py`
+   - 風報比不夠的均值回歸單直接不開
+
+4. **手續費感知 TP 地板** — `stop_loss.py`
+   - TP 最低百分比 = max(固定地板, 來回手續費 × 2.5)
+   - `compute()` 新增 `leverage` 參數
+   - `risk_manager.py` 傳入策略有效槓桿
+
+5. **提高基礎保證金** — `position_sizer.py`
+   - `DEFAULT_MARGIN_LOW`: 100 → 200（高槓桿幣種）
+   - `DEFAULT_MARGIN_HIGH`: 500 → 600（低槓桿幣種）
+
+### V8 → V9 Console & Notification Changes (2026-03-21)
+- Console 輸出改造：loguru 過濾器只顯示 `console=True` 或 ERROR+
+- 心跳改為 1 分鐘，顯示餘額/持倉/未實現盈虧/幣價
+- 15m 分析批次輸出，只顯示有事件的幣種
+- Telegram 啟動通知改全中文
+- 開倉通知價格套用 `fmt_price()` 智能格式化
+- pytest 不再發真的 Telegram 通知
+
+### Validation
+- `python -m pytest -q` → `98 passed`
+
+---
+
+## Runtime Tuning Override (2026-03-20 Signal Decay Diagnostics)
+
+- Daily report now includes a signal-chain funnel built from `analysis_logs` plus archived trading-log markers.
+  - candidates
+  - regime gate blocks
+  - MTF gate blocks
+  - veto pass/block
+  - pending created
+  - trigger confirmed / expired
+  - breakout retest hit / confirmed / expired
+  - MTF re-check block
+  - risk blocked
+  - executed
+- Added explicit observation-only markers for later daily summaries:
+  - `REGIME_GATE_BLOCK`
+  - `TRIGGER_CONFIRMED`
+  - `TRIGGER_EXPIRED`
+  - `BREAKOUT_EXPIRED_TIMEOUT`
+- Daily markdown/history payload now persists:
+  - signal bottleneck stage
+  - candidate/executed strategy distribution
+  - candidate/executed LONG-vs-SHORT distribution
+
+## Phase Status Snapshot (2026-03-19)
+
+| Phase | 名稱 | 狀態 | 備註 |
+| --- | --- | --- | --- |
+| 1 | Regime 重構 | complete | 2026-03-11 完成並通過驗證 |
+| 2 | Breakout Retest | complete | 2026-03-14 已完成狀態機與 logging |
+| 3 | MTF 對齊升級 | complete | 2026-03-14 已上線 4h/1h gate |
+| 4 | Exit Template 拆分 | complete | 2026-03-14 已拆成三策略模板 |
+| 5 | Position Sizing | complete | 2026-03-14 已有 conviction tier 與 risk weight |
+| 6 | 研究型 Logging | complete | 2026-03-14 已落地 metadata 與 regime observation |
+
+## Runtime Tuning Override (2026-03-19 P0/P1/P2 Consensus Fixes)
+
+- P0: 結構止損的 ATR floor 保底已重新接回
+  - [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\stop_loss.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\stop_loss.py)
+  - 當 structure stop 太靠近 entry 時，會依策略 family 使用最小 ATR 距離拉開
+- P0: runtime 資金規格已對齊 5000U
+  - [`C:\Users\RAYZ\Desktop\coding\tradingbrain\config\settings.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\config\settings.py)
+  - [`C:\Users\RAYZ\Desktop\coding\tradingbrain\.env`](C:\Users\RAYZ\Desktop\coding\tradingbrain\.env)
+  - [`C:\Users\RAYZ\Desktop\coding\tradingbrain\config\risk_defaults.json`](C:\Users\RAYZ\Desktop\coding\tradingbrain\config\risk_defaults.json)
+- P1: 1m trigger 前會重新驗證當前 MTF 方向
+  - [`C:\Users\RAYZ\Desktop\coding\tradingbrain\main.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\main.py)
+  - 衝突時記錄 `MTF_RECHECK_BLOCK`
+- P1: `position_check` 現在有 30 秒 timeout，避免卡住整個 scheduler
+- P1: soft stop 現在支援 `1m 連續收破` 或 `5m 單根完整收破`
+  - [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\execution\position_manager.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\execution\position_manager.py)
+- P2: mean reversion 最低風報比提高到 `1.0`
+  - [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\exit_profiles.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\risk\exit_profiles.py)
+- P2: signal strength 現在會影響 1m trigger 與 breakout retest confirm 嚴格度
+- P2: 日內節奏規則補成 5000U balance-relative 分檔
+  - `+1.6% / +3.0% / +4.0%`
+  - `-1.2% / -2.0% / -3.0%`
+
+## Runtime Tuning Override (2026-03-19 Short-Side Symmetry)
+
+- Breakout SHORT pipeline aligned with LONG core gating in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\breakout.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\core\strategy\breakout.py)
+  - SHORT no longer hard-requires bearish DI dominance, RSI floor, or extra short-only volume multiplier
+  - both LONG and SHORT now share the same hard gate structure:
+    - Bollinger band break
+    - volume confirmation
+    - ADX rising
+    - breakout candle body confirmation
+  - bearish-specific context is still recorded as metadata:
+    - `adx_neg_dominant`
+    - `rsi_above_quality_floor`
+    - `extra_volume_confirmed`
+- Updated tests in [`C:\Users\RAYZ\Desktop\coding\tradingbrain\tests\test_breakout_filters.py`](C:\Users\RAYZ\Desktop\coding\tradingbrain\tests\test_breakout_filters.py)
+  - SHORT now emits even when bearish DI stack is not dominant, as long as the shared core breakout conditions are valid
+  - oversold flushes are no longer hard-blocked if the core breakout is valid
+- Validation:
+  - `python -m pytest tests/test_breakout_filters.py -q` -> `4 passed`
+  - `python -m pytest tests/test_strategy.py -q` -> `6 passed`
 
 ## Runtime Tuning Override (2026-03-19 — Structure-First Exit Overhaul)
 
@@ -149,7 +265,7 @@
 
 ## 文件用途
 
-這份文件用來追蹤 TradingBrain V6 的六個 Phase 改造計畫與後續調整。
+這份文件用來追蹤 TradingBrain V7 的六個 Phase 改造計畫與後續調整。
 之後每完成一個 Phase，都要更新這份文件，至少補上：
 
 - 實際完成的改動
@@ -158,7 +274,7 @@
 - 當前風險或待補事項
 
 說明：
-- 目前專案已有一批先前的基線修復，例如編碼修復、LINE 通知、結構型停損骨架、`15m` 候選加 `1m` 觸發、daily report log 等。
+- 目前專案已有一批先前的基線修復，例如編碼修復、Telegram 通知、結構型停損骨架、`15m` 候選加 `1m` 觸發、daily report log 等。
 - 這些不列入下面六個 Phase 的完成進度。
 - 六個 Phase 從本文件建立後開始正式追蹤。
 

@@ -40,7 +40,7 @@ from config.settings import (
     APP_TIMEZONE,
     APP_TIMEZONE_NAME,
 )
-from core.logger_setup import setup_logger
+from core.logger_setup import setup_logger, console, fmt_price
 from core.data.websocket_feed import BinanceWebSocketFeed
 from core.data.market_data import MarketDataFetcher
 from core.pipeline.scheduler import TaskScheduler
@@ -66,6 +66,7 @@ from core.execution.execution_engine import execute_trade, is_trading_enabled
 from core.execution.binance_client import BinanceFuturesClient
 from core.execution.position_manager import sync_positions_from_exchange, run_position_check
 from notifications.telegram_notify import send_telegram_message
+from notifications.telegram_commands import TelegramCommandHandler
 from database.db_manager import DatabaseManager
 
 
@@ -159,13 +160,19 @@ class TradingBrain:
             "- 結構止損優先，持倉以 soft stop + hard stop 雙層保護",
             "- 倉位由止損距離反推，槓桿是結果，不是預設固定值",
         ]
+        preset_labels = {
+            "conservative": "保守",
+            "moderate": "穩健",
+            "aggressive": "積極",
+        }
+        preset_cn = preset_labels.get(active_preset, active_preset)
         return {
             "mode_text": mode_text,
             "risk_text": (
-                f"preset {active_preset} | base risk {base_risk_pct:.2f}% | "
-                f"max_positions {max_open_positions} | max_leverage {max_leverage}x"
+                f"{preset_cn}模式 | 單筆風險 {base_risk_pct:.2f}% | "
+                f"最多 {max_open_positions} 倉 | 最大 {max_leverage}x"
             ),
-            "strategy_text": "trend_following / breakout_retest / mean_reversion",
+            "strategy_text": "順勢 / 突破回踩 / 均值回歸",
             "strategy_lines": "\n".join(strategy_lines),
             "risk_lines": "\n".join(risk_lines),
         }
@@ -186,6 +193,8 @@ class TradingBrain:
         self.binance_client: BinanceFuturesClient | None = None
         self.last_kline_received_at: float = 0.0  # 供心跳檢查用
         self._pending_entries: dict[str, list[PendingEntry]] = {}
+        self._mtf_batch: dict[str, str] = {}  # symbol -> console summary line
+        self._mtf_flush_task: asyncio.Task | None = None
 
     @staticmethod
     def _mtf_gate_passed(full) -> bool:
@@ -501,10 +510,10 @@ class TradingBrain:
         from api.deps import set_db
         set_db(self.db)
 
-        logger.info("=" * 60)
-        logger.info("TradingBrain 啟動中...")
-        logger.info(f"交易模式: {TRADING_MODE}")
-        logger.info("=" * 60)
+        console("=" * 50)
+        console("🧠 TradingBrain V8 啟動中...")
+        console(f"⚙ 交易模式: {TRADING_MODE}")
+        console("=" * 50)
 
         # 確保必要目錄存在
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -515,7 +524,7 @@ class TradingBrain:
 
         # 2. 載入風控預設參數
         self._load_risk_defaults()
-        logger.info("風控參數載入完成")
+        console("✅ 風控參數載入完成")
 
         # 3. 初始化資訊管線模組
         self.funding_monitor = FundingRateMonitor(self.db)
@@ -529,11 +538,11 @@ class TradingBrain:
             fear_greed_monitor=self.fear_greed_monitor,
             liquidation_monitor=self.liquidation_monitor,
         )
-        logger.info("否決引擎初始化完成")
+        console("✅ 否決引擎初始化完成")
 
         # 5. 初始化技術分析引擎
         self.analysis_engine = AnalysisEngine()
-        logger.info("技術分析引擎初始化完成")
+        console("✅ 技術分析引擎初始化完成")
 
         # 5b. 策略與信號聚合器 — 參數由大腦覆寫，運行中每 15 分鐘熱重載
         self.signal_aggregator = SignalAggregator(
@@ -542,11 +551,11 @@ class TradingBrain:
             db=self.db,
         )
         self.coin_screener = CoinScreener()
-        logger.info("策略與信號聚合器初始化完成（參數由大腦驅動）")
+        console("✅ 策略與信號聚合器初始化完成")
 
         # 5c. 初始化風控核心
         self.risk_manager = RiskManager(self.db)
-        logger.info("風控核心初始化完成")
+        console("✅ 風控核心初始化完成")
 
         # 6. 初始化 WebSocket 數據流
         self.ws_feed = BinanceWebSocketFeed(
@@ -564,15 +573,15 @@ class TradingBrain:
             try:
                 self.binance_client = BinanceFuturesClient()
                 await sync_positions_from_exchange(self.db, self.binance_client)
-                logger.info("Testnet 持倉同步完成")
+                console("✅ Testnet 持倉同步完成")
             except Exception as e:
                 logger.warning(f"Testnet 持倉同步跳過: {e}")
                 self.binance_client = None
 
         self.running = True
-        logger.info("TradingBrain 啟動完成！")
-        logger.info(f"資料庫: {DB_PATH}")
-        logger.info(f"監控幣種: {', '.join(DEFAULT_WATCHLIST)}")
+        console("🟢 TradingBrain 啟動完成！")
+        console(f"📂 資料庫: {DB_PATH}")
+        console(f"📊 監控: {', '.join(DEFAULT_WATCHLIST)}")
         logger.info(f"交易模式: {TRADING_MODE}")
 
         summary = self._build_runtime_notification_summary()
@@ -580,19 +589,15 @@ class TradingBrain:
         # Telegram 啟動通知
         mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
         send_telegram_message(
-            f"🧠 TradingBrain V8 {mode_tag} 已啟動\n"
-            f"模式: {summary['mode_text']} | 幣種: {len(DEFAULT_WATCHLIST)}\n"
-            f"策略組合: {summary['strategy_text']}\n"
-            f"{summary['strategy_lines']}\n"
-            f"風控摘要:\n{summary['risk_lines']}\n"
-            f"📊 儀表板: http://localhost:8888"
+            f"🧠 TradingBrain V8 啟動 {mode_tag}\n"
+            f"📊 {len(DEFAULT_WATCHLIST)} 幣種 | 📋 {summary['strategy_text']}\n"
+            f"🛡 {summary['risk_text']}"
         )
 
 
 
-        # 提示用戶儀表板已整合至啟動器
-        logger.info(f"儀表板 API: http://0.0.0.0:{API_PORT}")
-        logger.info("✅ 儀表板已與主控台整合，請前往 http://localhost:8899 查看即時數據")
+        console(f"🌐 儀表板: http://0.0.0.0:{API_PORT}")
+        console("=" * 50)
 
     def _load_risk_defaults(self) -> None:
         """從 risk_defaults.json 載入預設風控參數"""
@@ -671,7 +676,7 @@ class TradingBrain:
                                 "is_closed": True,
                             }
                             self.ws_feed.cache.update(key, tf, candle)
-                        logger.info(f"預載 {symbol} {tf}: {len(df)} 根")
+                        logger.debug(f"預載 {symbol} {tf}: {len(df)} 根")
                     except Exception as e:
                         logger.warning(f"預載 {symbol} {tf} 失敗: {e}")
             await fetcher.close()
@@ -705,11 +710,11 @@ class TradingBrain:
                 seconds=SCHEDULER_CONFIG["position_check"]["interval_sec"],
                 description="持倉止損止盈檢查",
             )
-        # 心跳（靜默：僅異常時 Telegram）
+        # 心跳 — 每 1 分鐘 console 狀態行
         self.scheduler.add_interval_task(
             "heartbeat", self._heartbeat,
-            minutes=SCHEDULER_CONFIG["heartbeat"]["interval_min"],
-            description="Telegram 心跳(靜默)",
+            minutes=1,
+            description="Console 心跳",
         )
 
         # 監控快報 - 每 60 分鐘發一則 Telegram（今日損益/筆數/未平倉），讓你被動收到監控數據
@@ -770,9 +775,29 @@ class TradingBrain:
         # 在 15m 收盤時做完整 MTF 分析（主進場時間框架）
         if tf == "15m":
             await self._run_mtf_analysis(symbol)
+            # 延遲 flush — 等所有幣種的 15m 分析完成後批次輸出
+            if self._mtf_flush_task and not self._mtf_flush_task.done():
+                self._mtf_flush_task.cancel()
+            self._mtf_flush_task = asyncio.create_task(self._flush_mtf_batch())
 
-        # TODO Phase4: 觸發策略信號評估
-        # TODO Phase5: 信號通過否決引擎 -> 風控 -> 執行
+    async def _flush_mtf_batch(self) -> None:
+        """等所有 15m 分析完成後，批次輸出乾淨的 console 摘要"""
+        await asyncio.sleep(3)  # 等待所有幣種分析完成
+        batch = dict(self._mtf_batch)
+        self._mtf_batch.clear()
+        if not batch:
+            return
+
+        # 分類：有事的 vs 無信號
+        interesting = {s: v for s, v in batch.items() if v != "無信號"}
+        silent_count = len(batch) - len(interesting)
+
+        console(f"📊 15m 分析完成 ({len(batch)} 幣種)")
+        for sym, summary in interesting.items():
+            short = sym.replace("USDT", "")
+            console(f"   {short:>6} | {summary}")
+        if silent_count > 0:
+            console(f"   其餘 {silent_count} 幣種：無信號")
 
     async def _run_mtf_analysis(self, symbol: str) -> None:
         """執行完整多時間框架分析"""
@@ -804,12 +829,14 @@ class TradingBrain:
             MarketRegime.assess(primary, full=full) if primary else None
         )
 
+        regime_label = regime_assessment.regime if regime_assessment else "N/A"
+        mtf_direction = snapshot.get("mtf", {}).get("direction", "N/A")
         logger.info(
             f"MTF分析 {symbol}: "
             f"趨勢={snapshot.get('mtf', {}).get('alignment', 'N/A')}, "
-            f"方向={snapshot.get('mtf', {}).get('direction', 'N/A')}, "
+            f"方向={mtf_direction}, "
             f"信心={snapshot.get('mtf', {}).get('confidence', 0):.0%}, "
-            f"regime={regime_assessment.regime if regime_assessment else 'N/A'}"
+            f"regime={regime_label}"
         )
 
         # ── 市場快照（開單當下的指標數值，供覆盤分析）──
@@ -940,6 +967,21 @@ class TradingBrain:
                 f"(通過 {len(agg_result.passed)} 筆)"
             )
 
+        # ── 收集 console 批次摘要 ──
+        open_trades = self.db.get_open_trades() if self.db else []
+        if any(t["symbol"] == symbol for t in open_trades):
+            self._mtf_batch[symbol] = "--持倉中-- 跳過分析"
+        elif agg_result.passed:
+            sigs = [f"{s.signal_type} ({s.strategy_name})" for s in agg_result.passed]
+            regime_arrow = {"BULLISH": "↗", "BEARISH": "↘"}.get(mtf_direction, "─")
+            self._mtf_batch[symbol] = f"{regime_label} {regime_arrow} | ⚡ {', '.join(sigs)}"
+        elif agg_result.vetoed:
+            reasons = [r for _, r in agg_result.vetoed]
+            regime_arrow = {"BULLISH": "↗", "BEARISH": "↘"}.get(mtf_direction, "─")
+            self._mtf_batch[symbol] = f"{regime_label} {regime_arrow} | ❌ {'; '.join(reasons)}"
+        else:
+            self._mtf_batch[symbol] = "無信號"
+
         if primary and primary.df_enriched is not None:
             await self._queue_pending_entries(
                 agg_result.passed,
@@ -1040,15 +1082,14 @@ class TradingBrain:
                 ),
             })
             if sig.strategy_name == "breakout":
-                logger.info(
-                    f"候選訊號已建立: {sig.symbol} {sig.signal_type} breakout "
-                    f"(等待 1m retest，{expire_bars} 根內有效)"
+                console(
+                    f"⚡ {sig.symbol} {sig.signal_type} 候選 (breakout, 等待1m retest, {expire_bars}根內有效)"
                 )
             else:
-                logger.info(
-                    f"候選訊號已建立: {sig.symbol} {sig.signal_type} {sig.strategy_name} "
-                    f"(等待 1m 觸發，45 分鐘內有效)"
+                console(
+                    f"⚡ {sig.symbol} {sig.signal_type} 候選 ({sig.strategy_name}, 等待1m觸發)"
                 )
+            logger.info(f"候選訊號已建立: {sig.symbol} {sig.signal_type} {sig.strategy_name}")
 
     def _build_breakout_retest_signal(self, pending: PendingEntry) -> TradeSignal:
         indicators = dict(pending.signal.indicators)
@@ -1175,6 +1216,10 @@ class TradingBrain:
                     breakout_retest_status="pending",
                 ),
             })
+            console(
+                f"⚡ {pending.signal.symbol} {pending.signal.signal_type} "
+                f"retest zone 觸及 [{fmt_price(pending.retest_zone_low)}, {fmt_price(pending.retest_zone_high)}]"
+            )
             logger.info(
                 f"BREAKOUT_RETEST_HIT: {pending.signal.symbol} "
                 f"{pending.signal.signal_type} zone="
@@ -1232,6 +1277,10 @@ class TradingBrain:
                     breakout_retest_status="expired",
                 ),
             })
+            console(
+                f"⏰ {pending.signal.symbol} {pending.signal.signal_type} "
+                f"breakout 過期 ({pending.bars_waited} bars)"
+            )
             logger.info(
                 f"BREAKOUT_EXPIRED: {pending.signal.symbol} "
                 f"{pending.signal.signal_type} after {pending.bars_waited} bars"
@@ -1461,6 +1510,9 @@ class TradingBrain:
         if normalize_strategy_family(sig.strategy_name) != "mean_reversion":
             current_mtf = self._quick_mtf_direction_check(sig.symbol)
             if current_mtf not in {None, "NEUTRAL", sig.signal_type}:
+                console(
+                    f"🚫 {sig.symbol} {sig.signal_type} MTF方向改變被擋 (當前MTF={current_mtf})"
+                )
                 logger.warning(
                     f"MTF_RECHECK_BLOCK: {sig.symbol} signal={sig.signal_type} "
                     f"but current MTF={current_mtf}"
@@ -1536,8 +1588,7 @@ class TradingBrain:
             })
             if not trade_id:
                     send_telegram_message(
-                    f"❌ TradingBrain 交易所退單\n{sig.symbol} {sig.signal_type} | {sig.strategy_name}\n"
-                    "原因: 請檢查日誌 (通常為保證金不足或槓桿過高)"
+                    f"❌ 退單 | {sig.symbol} {sig.signal_type} | {sig.strategy_name}\n📝 檢查日誌（保證金不足或槓桿問題）"
                 )
             return trade_id
 
@@ -1567,9 +1618,9 @@ class TradingBrain:
             ),
         })
         send_telegram_message(
-            f"⚠️ TradingBrain 風控攔截\n{sig.symbol} {sig.signal_type} | {sig.strategy_name}\n"
-            f"攔截原因: {risk_result.reason}"
+            f"🚫 風控擋 | {sig.symbol} {sig.signal_type} | {sig.strategy_name}\n📝 {risk_result.reason}"
         )
+        console(f"🚫 {sig.symbol} {sig.signal_type} 風控擋！{risk_result.reason}")
         logger.info(f"風控攔截: {sig.symbol} {sig.signal_type} - {risk_result.reason}")
         return None
 
@@ -1588,13 +1639,9 @@ class TradingBrain:
             except Exception:
                 pass
         msg = (
-            f"📊 {mode_tag} 監控快報\n"
-            f"時區: {APP_TIMEZONE_NAME}\n"
-            f"今日損益: {daily_pnl:+.2f} U | 筆數: {len(trades_today)} | 未平倉: {len(open_trades)}"
-            f"{balance_str}\n"
-            f"模式: {summary['mode_text']}\n"
-            f"策略組合: {summary['strategy_text']}\n"
-            f"風控摘要: {summary['risk_text']}"
+            f"📊 快報 {mode_tag}\n"
+            f"💰 {daily_pnl:+.2f}U | 📋 {len(trades_today)}筆 | 📦 持倉 {len(open_trades)}"
+            f"{balance_str}"
         )
         send_telegram_message(msg)
         logger.debug("監控快報已發送")
@@ -1628,42 +1675,83 @@ class TradingBrain:
 
         counts = signal_chain.get("counts", {})
         bottleneck = signal_chain.get("bottleneck", {})
+        executed = counts.get('executed', 0)
+        risk_blocked = counts.get('risk_blocked', 0)
+        candidates = counts.get('candidate_signals', 0)
+        bal_str = f" | 餘額 {exchange_balance:.0f}U" if exchange_balance is not None else ""
         report = (
-            f"📊 TradingBrain 每日報告\n"
-            f"日期: {report_date} ({APP_TIMEZONE_NAME})\n"
-            f"昨日交易: {len(trades_today)} 筆\n"
-            f"昨日損益: {daily_pnl:+.2f} USDT\n"
-            f"未平倉位: {len(open_trades)} 個\n"
-            f"模式: {TRADING_MODE}\n"
-            f"信號鏈路: 候選 {counts.get('candidate_signals', 0)} → "
-            f"Regime通過 {counts.get('regime_gate_passed', 0)} → "
-            f"MTF通過 {counts.get('mtf_gate_passed', 0)} → "
-            f"Veto通過 {counts.get('veto_passed', 0)}\n"
-            f"Pending {counts.get('pending_created', 0)} / "
-            f"Trigger {counts.get('trigger_confirmed', 0)} / "
-            f"Recheck擋 {counts.get('mtf_recheck_blocked', 0)} / "
-            f"Risk擋 {counts.get('risk_blocked', 0)} / "
-            f"執行 {counts.get('executed', 0)}\n"
-            f"瓶頸: {bottleneck.get('stage', 'none')} "
-            f"(blocked {bottleneck.get('blocked', 0)})\n"
-            f"策略分布: {self._format_count_map(signal_chain.get('strategies', {}).get('executed', {}))}"
+            f"📈 日報 {report_date}\n"
+            f"💰 {daily_pnl:+.2f}U | 📋 {len(trades_today)}筆 | 📦 持倉 {len(open_trades)}{bal_str}\n"
+            f"🔍 信號 {candidates} → ✅ 執行 {executed} / 🚫 擋 {risk_blocked}\n"
+            f"⚡ 瓶頸: {bottleneck.get('stage', 'none')} ({bottleneck.get('blocked', 0)})\n"
+            f"📊 {self._format_count_map(signal_chain.get('strategies', {}).get('executed', {}))}"
         )
-        if exchange_balance is not None:
-            report += f"\n交易所餘額: {exchange_balance:.2f} U"
         logger.info(report)
         send_telegram_message(report)
 
     async def _heartbeat(self) -> None:
-        """心跳檢查（靜默）：僅在異常時發送 Telegram 告警"""
+        """每分鐘 console 心跳 + 異常告警"""
         # 超過 5 分鐘未收到 K 線視為異常
         stale = (time.time() - self.last_kline_received_at) > 300
         if stale and self.last_kline_received_at > 0:
-            msg = (
-                "⚠️ TradingBrain 心跳異常: 超過 5 分鐘未收到 K 線數據，"
-                "請檢查 WebSocket 連線或網路。"
-            )
+            msg = "💀 心跳異常 | >5分鐘無K線 | 檢查 WebSocket"
+            console(msg)
             logger.warning(msg)
             send_telegram_message(msg)
+            return
+
+        # ── 正常心跳：顯示乾淨狀態行 ──
+        balance_str = "N/A"
+        if self.binance_client:
+            try:
+                bal = await self.binance_client.get_balance()
+                balance_str = f"{bal:,.1f}U"
+            except Exception:
+                pass
+
+        open_trades = self.db.get_open_trades() if self.db else []
+        pending_count = sum(len(v) for v in self._pending_entries.values())
+
+        # 價格：BTC + ETH + 持倉中的幣
+        held_symbols = {t["symbol"] for t in open_trades}
+        show_symbols = ["BTCUSDT", "ETHUSDT"]
+        for sym in held_symbols:
+            if sym not in show_symbols:
+                show_symbols.append(sym)
+
+        price_parts = []
+        unrealized_pnl = 0.0
+        for sym in show_symbols:
+            latest = self.ws_feed.cache.get_latest(sym.lower(), "1m") if self.ws_feed else None
+            if not latest and self.ws_feed:
+                latest = self.ws_feed.cache.get_latest(sym.lower(), "15m")
+            if latest and "close" in latest:
+                price = float(latest["close"])
+                short_name = sym.replace("USDT", "")
+                if sym in held_symbols:
+                    # 找到持倉的盈虧
+                    trade = next((t for t in open_trades if t["symbol"] == sym), None)
+                    if trade:
+                        entry = float(trade.get("entry_price", 0))
+                        side = trade.get("side", "LONG")
+                        qty = float(trade.get("current_quantity") or trade.get("quantity", 0) or 0)
+                        if entry > 0:
+                            pnl_pct = ((price - entry) / entry) * 100
+                            pos_pnl = (price - entry) * qty
+                            if side == "SHORT":
+                                pnl_pct = -pnl_pct
+                                pos_pnl = (entry - price) * qty
+                            unrealized_pnl += pos_pnl
+                            price_parts.append(f"{short_name} {fmt_price(price)} ({pnl_pct:+.1f}%)")
+                            continue
+                price_parts.append(f"{short_name} {fmt_price(price)}")
+
+        pnl_str = f" | 未實現 {unrealized_pnl:+.2f}U" if open_trades else ""
+        line1 = f"💓 運行中 | 餘額 {balance_str}{pnl_str} | 持倉 {len(open_trades)} | 待觸發 {pending_count}"
+        line2 = "   " + " | ".join(price_parts) if price_parts else ""
+        console(line1)
+        if line2.strip():
+            console(line2)
 
     async def _position_check(self) -> None:
         """持倉止損/止盈檢查：從快取或 REST 取價，觸及則平倉"""
@@ -1718,7 +1806,7 @@ class TradingBrain:
         self.scheduler.start()
 
         # 首次啟動立即抓取資訊管線數據
-        logger.info("首次啟動：立即獲取市場資訊...")
+        console("📡 首次獲取市場資訊...")
         await asyncio.gather(
             self.funding_monitor.fetch_and_store(),
             self.fear_greed_monitor.fetch_and_store(),
@@ -1732,6 +1820,10 @@ class TradingBrain:
         # 啟動 WebSocket（在背景執行）
         ws_task = asyncio.create_task(self.ws_feed.start())
 
+        # 啟動 Telegram 指令監聽
+        cmd_handler = TelegramCommandHandler(self)
+        cmd_task = asyncio.create_task(cmd_handler.start())
+
         try:
             while self.running:
                 await asyncio.sleep(1)
@@ -1739,15 +1831,16 @@ class TradingBrain:
             pass
         finally:
             await self.shutdown()
+            cmd_task.cancel()
             ws_task.cancel()
             try:
-                await ws_task
+                await asyncio.gather(ws_task, cmd_task, return_exceptions=True)
             except asyncio.CancelledError:
                 pass
 
     async def shutdown(self) -> None:
         """系統關閉序列"""
-        logger.info("TradingBrain 關閉中...")
+        console("🔴 TradingBrain 關閉中...")
         self.running = False
 
         if self.scheduler:

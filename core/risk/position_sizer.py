@@ -52,6 +52,21 @@ def get_strategy_risk_weight(strategy_name: str) -> float:
     return 1.0
 
 
+# 策略級槓桿上限 — 不管幣種最大槓桿多高，策略本身有天花板
+STRATEGY_LEVERAGE_CAP: dict[str, int] = {
+    "trend_following": 20,
+    "breakout": 25,
+    "mean_reversion": 15,
+    "default": 20,
+}
+
+
+def get_strategy_leverage_cap(strategy_name: str) -> int:
+    """Return the max leverage allowed for the strategy family."""
+    family = normalize_strategy_family(strategy_name)
+    return STRATEGY_LEVERAGE_CAP.get(family, STRATEGY_LEVERAGE_CAP["default"])
+
+
 def _parse_max_open_positions(value: str | int, balance: float) -> int:
     """Resolve configured max open positions, including the ``auto`` mode."""
     if isinstance(value, int) and value >= 1:
@@ -155,8 +170,9 @@ class PositionSizer:
     """
 
     # Default margin range (USDT) - adjustable via risk params.
-    DEFAULT_MARGIN_LOW = 100    # For high-leverage coins (>=75x)
-    DEFAULT_MARGIN_HIGH = 500   # For low-leverage coins (<=25x)
+    # V9: 提高基礎保證金，確保每筆單有足夠份量
+    DEFAULT_MARGIN_LOW = 200    # For high-leverage coins (>=75x)
+    DEFAULT_MARGIN_HIGH = 600   # For low-leverage coins (<=25x)
 
     def __init__(self, db: "DatabaseManager | None" = None) -> None:
         self.db = db
@@ -242,6 +258,24 @@ class PositionSizer:
         strategy_weight = self._strategy_risk_weight(strategy_name)
         pnl_mod = _daily_pnl_modifier(daily_pnl, balance, params)
 
+        # C 級信號直接不開倉 — 系統自己都不確定的機會不值得花錢試
+        if tier == "C":
+            logger.info(
+                f"Position rejected: C-tier signal (strength={raw_strength:.2f}) "
+                f"— not worth the fees"
+            )
+            return PositionSizeResult(
+                size_usdt=0.0,
+                leverage=1,
+                rejected=True,
+                effective_risk_pct=0.0,
+                strategy_risk_weight=strategy_weight,
+                strength_multiplier=conviction_mult,
+                conviction_tier=tier,
+                daily_pnl_modifier=pnl_mod,
+                reason=f"C 級信號（信心度 {raw_strength:.0%}）不開倉",
+            )
+
         # Effective margin = base_margin * conviction * strategy_weight * pnl_mod
         effective_margin = base_margin * conviction_mult * strategy_weight * pnl_mod
 
@@ -251,11 +285,33 @@ class PositionSizer:
         if effective_margin > max_margin_per_trade:
             effective_margin = max_margin_per_trade
 
+        # 策略槓桿上限：不管幣種最大多高，策略有天花板
+        strategy_cap = get_strategy_leverage_cap(strategy_name)
+        leverage = min(coin_max_leverage, strategy_cap)
         # Notional = margin * leverage
-        leverage = coin_max_leverage
         size_usdt = effective_margin * leverage
 
         effective_risk_pct = effective_margin / balance if balance > 0 else 0.0
+
+        # 最低保證金門檻：低於 100U 的單不值得開（手續費會吃掉利潤）
+        min_margin = float(params.get("min_margin_per_trade", 100))
+        if effective_margin < min_margin:
+            logger.info(
+                f"Position rejected: margin {effective_margin:.1f}U < "
+                f"min {min_margin:.0f}U (tier={tier} weight={strategy_weight} pnl_mod={pnl_mod:.2f})"
+            )
+            return PositionSizeResult(
+                size_usdt=0.0,
+                leverage=1,
+                rejected=True,
+                effective_risk_pct=effective_risk_pct,
+                strategy_risk_weight=strategy_weight,
+                strength_multiplier=conviction_mult,
+                conviction_tier=tier,
+                daily_pnl_modifier=pnl_mod,
+                margin_usdt=effective_margin,
+                reason=f"保證金 {effective_margin:.0f}U 低於最低門檻 {min_margin:.0f}U",
+            )
 
         if size_usdt < min_notional:
             logger.warning(

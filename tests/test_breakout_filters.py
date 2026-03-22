@@ -52,17 +52,17 @@ def _base_rows() -> list[dict]:
     return rows
 
 
-def test_breakout_short_requires_bearish_structure_stack() -> None:
+def test_breakout_short_no_longer_requires_bearish_di_stack() -> None:
     rows = _base_rows()
     rows[-2].update({"close": 94.2, "bb_lower": 94.0, "adx": 28.0, "macd_hist": -0.8})
     rows[-1].update(
         {
-            "open": 94.1,
+            "open": 94.3,
             "high": 94.4,
             "low": 93.4,
-            "close": 93.8,
+            "close": 93.7,
             "bb_lower": 94.0,
-            "volume": 140.0,
+            "volume": 180.0,
             "adx": 29.0,
             "adx_pos": 22.0,
             "adx_neg": 20.0,
@@ -76,7 +76,9 @@ def test_breakout_short_requires_bearish_structure_stack() -> None:
 
     signals = strategy.evaluate_single("BTCUSDT", "15m", _result(pd.DataFrame(rows)))
 
-    assert signals == []
+    assert len(signals) == 1
+    assert signals[0].signal_type == "SHORT"
+    assert signals[0].indicators["adx_neg_dominant"] is False
 
 
 def test_breakout_short_emits_when_bearish_breakout_is_confirmed() -> None:
@@ -136,7 +138,7 @@ def test_breakout_short_allows_early_trend_breaks_without_ema_stack() -> None:
     assert signals[0].signal_type == "SHORT"
 
 
-def test_breakout_short_skips_oversold_flushes() -> None:
+def test_breakout_short_allows_oversold_flushes_when_core_breakout_confirms() -> None:
     rows = _base_rows()
     rows[-2].update({"close": 94.2, "bb_lower": 94.0, "adx": 28.0, "macd_hist": -0.8, "low": 93.9})
     rows[-1].update(
@@ -160,4 +162,6 @@ def test_breakout_short_skips_oversold_flushes() -> None:
 
     signals = strategy.evaluate_single("BTCUSDT", "15m", _result(pd.DataFrame(rows)))
 
-    assert signals == []
+    assert len(signals) == 1
+    assert signals[0].signal_type == "SHORT"
+    assert signals[0].indicators["rsi_above_quality_floor"] is False

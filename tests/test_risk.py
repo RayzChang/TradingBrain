@@ -193,18 +193,27 @@ def test_stop_loss_calculator():
 def test_stop_loss_calculator_mean_reversion_profile():
     print("\n=== 測試 mean_reversion 專屬出場模板 ===")
     calc = StopLossCalculator(db=None)
+    # V9: min_risk_reward raised to 1.5, use wider ATR to ensure pass
     result = calc.compute(
         entry_price=100,
         atr=2,
         direction="LONG",
         strategy_name="mean_reversion",
     )
-    assert result.rejected is False
-    assert result.stop_loss == 97.5
-    assert result.tp1 == 102.0
-    assert result.tp2 == 103.6
-    assert result.tp3 == 0.0
-    assert result.take_profit == result.tp2
+    # tp2=103.6, sl=97.5 → R:R=1.44 < 1.5 → rejected under new rules
+    assert result.rejected is True
+    assert "risk reward" in result.reason
+    # With explicit min_risk_reward override, it should pass
+    result2 = calc.compute(
+        entry_price=100,
+        atr=2,
+        direction="LONG",
+        strategy_name="mean_reversion",
+        min_risk_reward=1.0,
+    )
+    assert result2.rejected is False
+    assert result2.tp3 == 0.0
+    assert result2.take_profit == result2.tp2
     print("  [PASS]")
 
 
@@ -273,7 +282,7 @@ def test_exit_profile_family_mapping() -> None:
     # V8: mean_reversion now has tp3 (tp3_atr_mult=2.8), tp2_final_exit=False
     assert get_exit_profile("mean_reversion").tp2_final_exit is False
     assert get_exit_profile("mean_reversion").tp3_atr_mult == 2.8
-    assert get_exit_profile("mean_reversion").min_risk_reward == 1.0
+    assert get_exit_profile("mean_reversion").min_risk_reward == 1.5
     print("  [PASS]")
 
 
@@ -540,8 +549,8 @@ def test_stop_loss_calculator_uses_structure_stop_even_when_wider_than_atr(
         "core.risk.stop_loss.compute_structure_levels",
         lambda *args, **kwargs: StructureLevels(
             stop_loss=96.0,
-            tp1=102.0,
-            tp2=104.0,
+            tp1=104.0,
+            tp2=107.0,
             tp3=None,
             source="structure",
         ),
@@ -570,7 +579,7 @@ def test_stop_loss_calculator_uses_structure_stop_short_wider_than_atr(
         lambda *args, **kwargs: StructureLevels(
             stop_loss=106.0,
             tp1=96.0,
-            tp2=93.0,
+            tp2=91.0,
             tp3=None,
             source="structure",
         ),

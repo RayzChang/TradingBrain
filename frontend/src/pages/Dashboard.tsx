@@ -1,10 +1,10 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Wallet, TrendingUp, Target, BarChart3 } from "lucide-react";
 
 import { systemApi, tradesApi } from "../api";
-import StatCard from "../components/StatCard";
-import KlineChart from "../components/KlineChart";
 import DecisionPipeline from "../components/DecisionPipeline";
+import KlineChart from "../components/KlineChart";
+import StatCard from "../components/StatCard";
 
 type Trade = {
   id: number;
@@ -17,6 +17,20 @@ type Trade = {
   pnl?: number | null;
   stop_loss?: number | null;
   take_profit?: number | null;
+  soft_stop_loss?: number | null;
+  hard_stop_loss?: number | null;
+  soft_stop_required_closes?: number | null;
+  stop_zone_low?: number | null;
+  stop_zone_high?: number | null;
+  tp1_price?: number | null;
+  tp1_zone_low?: number | null;
+  tp1_zone_high?: number | null;
+  tp2_price?: number | null;
+  tp2_zone_low?: number | null;
+  tp2_zone_high?: number | null;
+  tp3_price?: number | null;
+  tp3_zone_low?: number | null;
+  tp3_zone_high?: number | null;
   strategy_name?: string | null;
   current_price?: number | null;
   unrealized_pnl?: number | null;
@@ -30,6 +44,62 @@ type StatusData = {
   open_positions_count: number;
   exchange_balance?: number | null;
 };
+
+function formatPrice(value?: number | null): string {
+  if (value == null || Number.isNaN(value)) {
+    return "--";
+  }
+  const abs = Math.abs(value);
+  const digits = abs >= 1000 ? 2 : abs >= 1 ? 4 : 6;
+  return value.toFixed(digits);
+}
+
+function formatZone(low?: number | null, high?: number | null): string | null {
+  if (low == null || high == null || Number.isNaN(low) || Number.isNaN(high)) {
+    return null;
+  }
+  return `${formatPrice(low)} - ${formatPrice(high)}`;
+}
+
+function renderProtection(trade: Trade) {
+  const softStop = trade.soft_stop_loss ?? trade.stop_loss;
+  const hardStop = trade.hard_stop_loss ?? trade.stop_loss;
+  const stopZone = formatZone(trade.stop_zone_low, trade.stop_zone_high);
+  const closeRule =
+    trade.soft_stop_required_closes && trade.soft_stop_required_closes > 0
+      ? `${trade.soft_stop_required_closes} 根收破`
+      : null;
+
+  return (
+    <div className="space-y-1 text-right">
+      <div className="font-mono text-xs text-[var(--text-primary)]">Soft {formatPrice(softStop)}</div>
+      <div className="font-mono text-xs text-[var(--text-dim)]">Hard {formatPrice(hardStop)}</div>
+      {stopZone && <div className="text-[11px] text-[var(--text-dim)]">Zone {stopZone}</div>}
+      {closeRule && <div className="text-[11px] text-[var(--text-dim)]">{closeRule}</div>}
+    </div>
+  );
+}
+
+function renderTargets(trade: Trade) {
+  const tp1Zone = formatZone(trade.tp1_zone_low, trade.tp1_zone_high);
+  const tp2Zone = formatZone(trade.tp2_zone_low, trade.tp2_zone_high);
+  const tp3Zone = formatZone(trade.tp3_zone_low, trade.tp3_zone_high);
+
+  return (
+    <div className="space-y-1 text-right">
+      <div className="font-mono text-xs text-[var(--text-primary)]">TP1 {formatPrice(trade.tp1_price ?? trade.take_profit)}</div>
+      <div className="font-mono text-xs text-[var(--text-dim)]">TP2 {formatPrice(trade.tp2_price)}</div>
+      <div className="font-mono text-xs text-[var(--text-dim)]">TP3 {formatPrice(trade.tp3_price)}</div>
+      {(tp1Zone || tp2Zone || tp3Zone) && (
+        <div className="space-y-0.5 text-[11px] text-[var(--text-dim)]">
+          {tp1Zone && <div>Z1 {tp1Zone}</div>}
+          {tp2Zone && <div>Z2 {tp2Zone}</div>}
+          {tp3Zone && <div>Z3 {tp3Zone}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Dashboard() {
   const [status, setStatus] = useState<StatusData | null>(null);
@@ -159,8 +229,8 @@ export default function Dashboard() {
                   <th>Side</th>
                   <th className="text-right">Entry</th>
                   <th className="text-right">Current</th>
-                  <th className="text-right">Stop Loss</th>
-                  <th className="text-right">Take Profit</th>
+                  <th className="text-right">Protection</th>
+                  <th className="text-right">Targets</th>
                   <th className="text-right">Unrealized</th>
                   <th>Strategy</th>
                   <th className="text-right">Leverage</th>
@@ -180,10 +250,10 @@ export default function Dashboard() {
                     <td>
                       <span className={trade.side === "LONG" ? "badge-long" : "badge-short"}>{trade.side}</span>
                     </td>
-                    <td className="text-right font-mono">{trade.entry_price.toFixed(2)}</td>
-                    <td className="text-right font-mono">{trade.current_price != null ? trade.current_price.toFixed(2) : "--"}</td>
-                    <td className="text-right font-mono text-[var(--text-dim)]">{trade.stop_loss != null ? trade.stop_loss.toFixed(2) : "--"}</td>
-                    <td className="text-right font-mono text-[var(--text-dim)]">{trade.take_profit != null ? trade.take_profit.toFixed(2) : "--"}</td>
+                    <td className="text-right font-mono">{formatPrice(trade.entry_price)}</td>
+                    <td className="text-right font-mono">{formatPrice(trade.current_price)}</td>
+                    <td>{renderProtection(trade)}</td>
+                    <td>{renderTargets(trade)}</td>
                     <td className={`text-right font-mono font-medium ${trade.unrealized_pnl != null ? (trade.unrealized_pnl >= 0 ? "text-[var(--green)]" : "text-[var(--red)]") : ""}`}>
                       {trade.unrealized_pnl != null ? `${trade.unrealized_pnl >= 0 ? "+" : ""}${trade.unrealized_pnl.toFixed(2)}` : "--"}
                     </td>

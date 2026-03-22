@@ -114,7 +114,9 @@ async def _execute_trade_success_mock() -> None:
 
     with patch("core.execution.execution_engine.is_trading_enabled", return_value=True), patch(
         "core.execution.execution_engine.BinanceFuturesClient"
-    ) as klass:
+    ) as klass, patch(
+        "core.execution.execution_engine.send_telegram_message"
+    ) as send_mock:
         inst = MagicMock()
         inst.supports_algo_orders.return_value = True
         inst.set_leverage = AsyncMock(side_effect=mock_set_leverage)
@@ -134,10 +136,44 @@ async def _execute_trade_success_mock() -> None:
     assert trade_data["effective_risk_pct"] == 0.016
     assert trade_data["sl_atr_mult"] == 1.5
     assert trade_data["structure_stop_floor_triggered"] == 1
+    send_mock.assert_called_once()
+    test_message = send_mock.call_args.args[0]
+    assert "測試" in test_message
+    assert "BTCUSDT" in test_message
+    assert "LONG" in test_message
 
 
 def test_execute_trade_success_mock():
     asyncio.run(_execute_trade_success_mock())
+
+
+def test_build_trade_open_message_uses_test_label_for_test_strategy():
+    from core.execution.execution_engine import _build_trade_open_message
+
+    message = _build_trade_open_message(
+        is_test=True,
+        version="V7",
+        mode="Testnet",
+        symbol="BTCUSDT",
+        side="LONG",
+        strategy_name="test",
+        strategy_family="test",
+        margin_cost=50,
+        size_usdt=100,
+        leverage=2,
+        entry_price=100000.0,
+        soft_stop_loss=99000.0,
+        hard_stop_loss=98500.0,
+        soft_stop_required_closes=2,
+        tp1=101000.0,
+        tp2=102000.0,
+        tp3=103000.0,
+    )
+
+    assert "測試" in message
+    assert "BTCUSDT" in message
+    assert "LONG" in message
+    assert "開倉" not in message.splitlines()[0]
 
 
 async def _execute_trade_breakout_profile_uses_profile_tp1_qty() -> None:
@@ -163,7 +199,9 @@ async def _execute_trade_breakout_profile_uses_profile_tp1_qty() -> None:
 
     with patch("core.execution.execution_engine.is_trading_enabled", return_value=True), patch(
         "core.execution.execution_engine.BinanceFuturesClient"
-    ) as klass:
+    ) as klass, patch(
+        "core.execution.execution_engine.send_telegram_message"
+    ):
         inst = MagicMock()
         inst.supports_algo_orders.return_value = True
         inst.set_leverage = AsyncMock(return_value=None)
@@ -207,7 +245,9 @@ async def _execute_trade_testnet_local_protection() -> None:
 
     with patch("core.execution.execution_engine.is_trading_enabled", return_value=True), patch(
         "core.execution.execution_engine.BinanceFuturesClient"
-    ) as klass:
+    ) as klass, patch(
+        "core.execution.execution_engine.send_telegram_message"
+    ):
         inst = MagicMock()
         inst.supports_algo_orders.return_value = False
         inst.set_leverage = AsyncMock(return_value=None)

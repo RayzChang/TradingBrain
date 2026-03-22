@@ -16,7 +16,11 @@ from loguru import logger
 import pandas as pd
 
 from core.risk.exit_profiles import get_exit_profile, normalize_strategy_family
-from core.risk.structure_levels import compute_structure_levels
+from core.risk.structure_levels import (
+    _hard_stop_buffer,
+    compute_structure_levels,
+    get_structure_stop_floor_mult,
+)
 
 if TYPE_CHECKING:
     from database.db_manager import DatabaseManager
@@ -87,6 +91,7 @@ class StopLossCalculator:
         stop_loss_atr_mult: float | None = None,
         take_profit_atr_mult: float | None = None,
         min_risk_reward: float | None = None,
+        leverage: int | None = None,
     ) -> StopLossResult:
         """Return stop-loss and take-profit levels for the given strategy."""
         params = self._get_params()
@@ -215,10 +220,35 @@ class StopLossCalculator:
                 structure_stop_anchor is not None
                 and round(float(structure_stop_anchor), 4) != round(float(structure_stop), 4)
             )
+            floor_mult = get_structure_stop_floor_mult(strategy_name)
+            if floor_mult is not None and atr > 0:
+                min_distance = float(floor_mult) * float(atr)
+                actual_distance = abs(entry_price - soft_stop_loss)
+                if actual_distance < min_distance:
+                    hard_stop_buffer = abs(float(hard_stop_loss) - float(soft_stop_loss))
+                    if hard_stop_buffer <= 0:
+                        hard_stop_buffer = _hard_stop_buffer(entry_price, atr, family)
+                    if direction == "LONG":
+                        soft_stop_loss = entry_price - min_distance
+                        hard_stop_loss = max(soft_stop_loss - hard_stop_buffer, 0.0)
+                    else:
+                        soft_stop_loss = entry_price + min_distance
+                        hard_stop_loss = soft_stop_loss + hard_stop_buffer
+                    structure_floor_triggered = True
+                    logger.info(
+                        "STRUCTURE_STOP_FLOOR: "
+                        f"{symbol or 'UNKNOWN'} structure={structure_stop:.4f} "
+                        f"atr_floor={soft_stop_loss:.4f} final={soft_stop_loss:.4f}"
+                    )
             if structure_floor_triggered:
+                anchor_text = (
+                    f"{structure_stop_anchor:.4f}"
+                    if structure_stop_anchor is not None
+                    else "n/a"
+                )
                 logger.info(
                     "STRUCTURE_STOP_ZONE: "
-                    f"{symbol or 'UNKNOWN'} anchor={structure_stop_anchor:.4f} "
+                    f"{symbol or 'UNKNOWN'} anchor={anchor_text} "
                     f"soft={soft_stop_loss:.4f} hard={hard_stop_loss:.4f}"
                 )
         else:
@@ -242,6 +272,28 @@ class StopLossCalculator:
                     tp3 = max(structure_tp3, tp3)
                 else:
                     tp3 = min(structure_tp3, tp3)
+
+        # ── TP 最低百分比地板：手續費感知動態計算 ──
+        # Binance taker fee = 0.04% per side, round-trip = 0.08%
+        # 高槓桿時實際手續費佔保證金比例 = round_trip_fee * leverage
+        # TP 至少要覆蓋 2 倍來回手續費才有肉吃
+        base_fee_pct = 0.0008  # 0.08% round-trip
+        eff_leverage = leverage if leverage and leverage > 0 else 20
+        fee_aware_floor = base_fee_pct * 2.5  # 至少覆蓋 2.5 倍手續費
+        tp1_floor_pct = max(0.008, fee_aware_floor)   # TP1 至少 0.8% 或手續費地板
+        tp2_floor_pct = max(0.015, fee_aware_floor * 2)  # TP2 至少 1.5%
+        tp3_floor_pct = max(0.025, fee_aware_floor * 3)  # TP3 至少 2.5%
+
+        if direction == "LONG":
+            tp1 = max(tp1, entry_price * (1 + tp1_floor_pct))
+            tp2 = max(tp2, entry_price * (1 + tp2_floor_pct))
+            if tp3 > 0:
+                tp3 = max(tp3, entry_price * (1 + tp3_floor_pct))
+        else:
+            tp1 = min(tp1, entry_price * (1 - tp1_floor_pct))
+            tp2 = min(tp2, entry_price * (1 - tp2_floor_pct))
+            if tp3 > 0:
+                tp3 = min(tp3, entry_price * (1 - tp3_floor_pct))
 
         final_target_distance = abs((tp2 if is_mean_reversion else tp3) - entry_price)
         final_target_price = tp2 if is_mean_reversion else tp3

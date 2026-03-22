@@ -1,1 +1,1 @@
-# Notifications package: LINE, etc.
+# Notifications package: Telegram and compatibility shims.

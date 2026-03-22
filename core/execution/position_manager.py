@@ -13,6 +13,7 @@ from loguru import logger
 import pandas as pd
 
 from core.execution.binance_client import BinanceFuturesClient
+from core.logger_setup import console, fmt_price
 from core.risk.exit_profiles import get_exit_profile, normalize_strategy_family
 from notifications.telegram_notify import send_telegram_message
 
@@ -145,6 +146,11 @@ async def _partial_close(
         f"qty={close_qty:.6f} @ {current_price:.4f} | "
         f"PnL={pnl:+.2f}U ({pnl_pct:+.2f}%)"
     )
+    pnl_emoji = "💚" if pnl >= 0 else "💔"
+    console(
+        f"{pnl_emoji} {symbol} {side} 部分平倉 {reason} | "
+        f"{fmt_price(entry)}→{fmt_price(current_price)} | {pnl:+.2f}U ({pnl_pct:+.2f}%)"
+    )
     return True
 
 
@@ -183,20 +189,19 @@ async def _full_close(
         exit_reason=exit_reason,
     )
 
-    pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
+    pnl_emoji = "💚" if total_pnl >= 0 else "💔"
     close_msg = (
-        f"{pnl_emoji} TradingBrain V8 平倉\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"幣種: {symbol} {side}\n"
-        f"原因: {exit_reason}\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"進場: {entry:.4f}\n"
-        f"出場: {current_price:.4f}\n"
-        f"損益: {total_pnl:+.2f} U ({pnl_pct:+.2f}%)"
+        f"{pnl_emoji} {symbol} {side} 平倉 | {exit_reason}\n"
+        f"📍 {entry:.4f} → {current_price:.4f}\n"
+        f"💰 {total_pnl:+.2f}U ({pnl_pct:+.2f}%)"
     )
     send_telegram_message(close_msg)
     logger.info(
         f"Full close completed: {symbol} {side} {exit_reason} pnl={total_pnl:.2f}"
+    )
+    console(
+        f"{pnl_emoji} {symbol} {side} 全部平倉 {exit_reason} | "
+        f"{fmt_price(entry)}→{fmt_price(current_price)} | {total_pnl:+.2f}U ({pnl_pct:+.2f}%)"
     )
 
 
@@ -486,15 +491,9 @@ async def run_position_check(
                                 tp2,
                             )
 
-                    message = (
-                        f"TP1 hit\n"
-                        f"{symbol} {side} | close {tp1_close_pct:.0%} ({close_qty:.6f})\n"
-                        f"剩餘倉位: {new_qty:.6f}\n"
-                        f"Soft SL: {new_soft:.4f}\n"
-                        f"Hard SL: {new_hard:.4f}"
-                    )
+                    message = f"🎯 TP1 {symbol} {side} | 平 {tp1_close_pct:.0%} | 🛡 SL→{new_soft:.4f}"
                     if tp2:
-                        message += f"\nNext TP2: {tp2:.4f}"
+                        message += f"\n➡️ 下一站 TP2: {tp2:.4f}"
                     send_telegram_message(message)
                     logger.info(f"TP1 hit: {symbol} {side}")
                     tp_stage = 1
@@ -521,7 +520,7 @@ async def run_position_check(
                             exit_reason="TP2",
                         )
                         send_telegram_message(
-                            f"TP2 hit\n{symbol} {side} | close remaining {close_qty:.6f}\n剩餘倉位: 0\nExit profile: mean_reversion"
+                            f"🎯 TP2 {symbol} {side} | 全平 ✨ mean_reversion"
                         )
                         logger.info(f"TP2 final exit: {symbol} {side} mean_reversion")
                         if risk_manager and hasattr(risk_manager, "update_equity_high_water_mark"):
@@ -556,15 +555,9 @@ async def run_position_check(
                         close_side = "SELL" if side == "LONG" else "BUY"
                         await client.place_stop_loss(symbol, close_side, new_qty, new_hard)
 
-                    message = (
-                        f"TP2 hit\n"
-                        f"{symbol} {side} | close {profile.tp2_close_pct:.0%} ({close_qty:.6f})\n"
-                        f"剩餘倉位: {new_qty:.6f}\n"
-                        f"Soft SL: {new_soft:.4f}\n"
-                        f"Hard SL: {new_hard:.4f}"
-                    )
+                    message = f"🎯 TP2 {symbol} {side} | 平 {profile.tp2_close_pct:.0%} | 🛡 SL→{new_soft:.4f}"
                     if tp3:
-                        message += f"\nRemaining position trails toward TP3: {tp3:.4f}"
+                        message += f"\n🚀 追蹤 TP3: {tp3:.4f}"
                     send_telegram_message(message)
                     logger.info(f"TP2 hit: {symbol} {side}")
                     tp_stage = 2
@@ -578,7 +571,7 @@ async def run_position_check(
             )
             if tp3_hit:
                 await _full_close(db, client, trade, current, "TP3")
-                send_telegram_message(f"TP3 hit\n{symbol} {side} | final exit @ {current:.4f}")
+                send_telegram_message(f"🏆 TP3 {symbol} {side} | 全平 @ {current:.4f} ✨")
                 if risk_manager and hasattr(risk_manager, "update_equity_high_water_mark"):
                     await _update_hwm(client, risk_manager)
                 continue

@@ -132,17 +132,14 @@ class BreakoutStrategy(BaseStrategy):
                 logger.debug(f"{self.name} LONG breakout: {symbol} {timeframe} ADX={adx:.1f}")
 
         if close < bb_lower and float(prev["close"]) >= float(prev.get("bb_lower", bb_lower)):
-            short_structure_ok = (
-                bearish_breakout_confirmed
-                and adx_neg is not None
+            adx_neg_dominant = (
+                adx_neg is not None
                 and adx_pos is not None
                 and adx_neg > adx_pos
-                and rsi is not None
-                and rsi >= self.short_rsi_floor
-                and volume > avg_volume * self.short_volume_mult
-                and macd_expanding_bearish
             )
-            if volume_confirmed and adx_rising and short_structure_ok:
+            rsi_above_quality_floor = rsi is not None and rsi >= self.short_rsi_floor
+            extra_volume_confirmed = avg_volume > 0 and volume > avg_volume * self.short_volume_mult
+            if volume_confirmed and adx_rising and bearish_breakout_confirmed:
                 strength = 0.6
                 if macd_expanding_bearish:
                     strength += 0.15
@@ -164,16 +161,19 @@ class BreakoutStrategy(BaseStrategy):
                             "volume_ratio": round(volume / avg_volume, 2),
                             "macd_expanding": macd_expanding_bearish,
                             "breakout_body_ok": bearish_breakout_confirmed,
-                            "adx_neg": round(adx_neg, 2),
-                            "adx_pos": round(adx_pos, 2),
-                            "rsi": round(rsi, 2),
+                            "adx_neg": round(adx_neg, 2) if adx_neg is not None else None,
+                            "adx_pos": round(adx_pos, 2) if adx_pos is not None else None,
+                            "rsi": round(rsi, 2) if rsi is not None else None,
+                            "adx_neg_dominant": adx_neg_dominant,
+                            "rsi_above_quality_floor": rsi_above_quality_floor,
+                            "extra_volume_confirmed": extra_volume_confirmed,
                             "bb_lower": round(bb_lower, 4),
                             "close": round(close, 4),
                             "breakout_retest_status": "pending",
                         },
                         reason=(
                             f"Bearish breakout below lower band with "
-                            f"{volume / avg_volume:.1f}x volume and bearish confirmation"
+                            f"{volume / avg_volume:.1f}x volume and rising ADX"
                         ),
                     )
                 )
