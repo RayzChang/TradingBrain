@@ -196,7 +196,7 @@ async def execute_trade(
         paper_margin = size_usdt / leverage if leverage else size_usdt
         msg = _build_trade_open_message(
             is_test=is_test_notification,
-            version="V8",
+            version="V9",
             mode="Paper",
             symbol=symbol,
             side=signal.signal_type,
@@ -330,7 +330,7 @@ async def execute_trade(
     margin_cost = size_usdt / leverage if leverage else size_usdt
     open_msg = _build_trade_open_message(
         is_test=is_test_notification,
-        version="V8",
+        version="V9",
         mode=mode,
         symbol=symbol,
         side=signal.signal_type,

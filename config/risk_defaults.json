@@ -55,9 +55,9 @@
       "chop_pause_minutes": 60
     },
     "passive_income": {
-      "label": "被動收入型 V8（固定保證金 + 最大槓桿，日目標 50-200U）",
-      "fixed_margin_low": 100,
-      "fixed_margin_high": 500,
+      "label": "被動收入型 V9（固定保證金 + 策略槓桿上限，日目標 50-200U）",
+      "fixed_margin_low": 200,
+      "fixed_margin_high": 600,
       "min_notional_value": 10,
       "max_open_positions": 3,
       "max_leverage": 125,

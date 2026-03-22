@@ -274,15 +274,28 @@ class StopLossCalculator:
                     tp3 = min(structure_tp3, tp3)
 
         # ── TP 最低百分比地板：手續費感知動態計算 ──
-        # Binance taker fee = 0.04% per side, round-trip = 0.08%
-        # 高槓桿時實際手續費佔保證金比例 = round_trip_fee * leverage
-        # TP 至少要覆蓋 2 倍來回手續費才有肉吃
-        base_fee_pct = 0.0008  # 0.08% round-trip
+        # Binance taker fee = 0.04% per side → round-trip = 0.08% of notional
+        # 但手續費佔保證金的比例 = round_trip_fee_pct * leverage
+        # 要讓 TP 價格移動 * leverage > 手續費佔保證金比例
+        # 所以 TP 最低價格移動 % = round_trip_fee / safety_margin
+        # safety_margin = 我們要求 TP 淨賺至少是手續費的 2.5 倍
+        base_fee_pct = 0.0008  # 0.08% round-trip (of notional = of price move)
         eff_leverage = leverage if leverage and leverage > 0 else 20
-        fee_aware_floor = base_fee_pct * 2.5  # 至少覆蓋 2.5 倍手續費
-        tp1_floor_pct = max(0.008, fee_aware_floor)   # TP1 至少 0.8% 或手續費地板
-        tp2_floor_pct = max(0.015, fee_aware_floor * 2)  # TP2 至少 1.5%
-        tp3_floor_pct = max(0.025, fee_aware_floor * 3)  # TP3 至少 2.5%
+        # TP 價格移動需覆蓋：來回手續費 × 安全倍數
+        # 例：手續費 0.08%，安全倍數 2.5 → TP 至少移動 0.2%
+        # 高槓桿時手續費佔保證金比例更大，但 TP 是按價格移動算的
+        # 真正的保底：TP% * leverage > fee% * leverage * safety_mult
+        # 簡化後：TP% > fee% * safety_mult（手續費是按名義值算的）
+        # 但低槓桿時固定地板可能太高反而卡單，所以取 max
+        fee_safety_mult = 2.5  # TP 淨利至少覆蓋 2.5 倍手續費
+        fee_aware_floor = base_fee_pct * fee_safety_mult  # = 0.2%
+        tp1_floor_pct = max(0.008, fee_aware_floor)        # TP1 至少 0.8%
+        tp2_floor_pct = max(0.015, fee_aware_floor * 2)    # TP2 至少 1.5%
+        tp3_floor_pct = max(0.025, fee_aware_floor * 3)    # TP3 至少 2.5%
+        logger.debug(
+            f"TP floor: leverage={eff_leverage}x fee_floor={fee_aware_floor:.4f} "
+            f"tp1={tp1_floor_pct:.4f} tp2={tp2_floor_pct:.4f} tp3={tp3_floor_pct:.4f}"
+        )
 
         if direction == "LONG":
             tp1 = max(tp1, entry_price * (1 + tp1_floor_pct))

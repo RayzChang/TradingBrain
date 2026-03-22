@@ -139,11 +139,13 @@ class TradingBrain:
 
     def _build_runtime_notification_summary(self) -> dict[str, str]:
         """Return startup/heartbeat summary fields based on live runtime config."""
+        from core.risk.position_sizer import STRATEGY_LEVERAGE_CAP
+
         params = self.db.get_risk_params() if self.db else {}
         active_preset = params.get("active_preset", "unknown")
-        base_risk_pct = float(params.get("max_risk_per_trade", 0.0)) * 100
+        margin_low = int(float(params.get("fixed_margin_low", 200)))
+        margin_high = int(float(params.get("fixed_margin_high", 600)))
         max_open_positions = params.get("max_open_positions", "auto")
-        max_leverage = int(params.get("max_leverage", DEFAULT_LEVERAGE))
         max_daily_loss_pct = float(params.get("max_daily_loss", 0.0)) * 100
         mode_text = "paper" if TRADING_MODE == "paper" else ("testnet" if BINANCE_TESTNET else "live")
         strategy_lines = [
@@ -151,26 +153,28 @@ class TradingBrain:
             self._format_strategy_profile("breakout_retest", "breakout_retest"),
             self._format_strategy_profile("mean_reversion", "mean_reversion"),
         ]
+        trend_cap = STRATEGY_LEVERAGE_CAP.get("trend_following", 20)
+        breakout_cap = STRATEGY_LEVERAGE_CAP.get("breakout", 25)
+        mr_cap = STRATEGY_LEVERAGE_CAP.get("mean_reversion", 15)
         risk_lines = [
             f"- 預設方案: {active_preset}",
-            (
-                f"- 基準單筆風險 {base_risk_pct:.2f}% / 最大同時持倉 {max_open_positions} / "
-                f"最大槓桿上限 {max_leverage}x / 單日虧損上限 {max_daily_loss_pct:.2f}%"
-            ),
-            "- 結構止損優先，持倉以 soft stop + hard stop 雙層保護",
-            "- 倉位由止損距離反推，槓桿是結果，不是預設固定值",
+            f"- 固定保證金 {margin_low}-{margin_high}U / 最大同時持倉 {max_open_positions}",
+            f"- 策略槓桿上限: 順勢 {trend_cap}x / 突破 {breakout_cap}x / 均值回歸 {mr_cap}x",
+            f"- 單日虧損上限 {max_daily_loss_pct:.1f}% / C 級信號不開倉",
+            "- 結構止損優先，soft stop + hard stop 雙層保護",
         ]
         preset_labels = {
             "conservative": "保守",
             "moderate": "穩健",
             "aggressive": "積極",
+            "passive_income": "被動收入",
         }
         preset_cn = preset_labels.get(active_preset, active_preset)
         return {
             "mode_text": mode_text,
             "risk_text": (
-                f"{preset_cn}模式 | 單筆風險 {base_risk_pct:.2f}% | "
-                f"最多 {max_open_positions} 倉 | 最大 {max_leverage}x"
+                f"{preset_cn}模式 | 保證金 {margin_low}-{margin_high}U | "
+                f"最多 {max_open_positions} 倉 | 槓桿上限 {trend_cap}/{breakout_cap}/{mr_cap}x"
             ),
             "strategy_text": "順勢 / 突破回踩 / 均值回歸",
             "strategy_lines": "\n".join(strategy_lines),
