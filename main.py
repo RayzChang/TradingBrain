@@ -515,7 +515,7 @@ class TradingBrain:
         set_db(self.db)
 
         console("=" * 50)
-        console("🧠 TradingBrain V8 啟動中...")
+        console("🧠 TradingBrain V9 啟動中...")
         console(f"⚙ 交易模式: {TRADING_MODE}")
         console("=" * 50)
 
@@ -593,7 +593,7 @@ class TradingBrain:
         # Telegram 啟動通知
         mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
         send_telegram_message(
-            f"🧠 TradingBrain V8 啟動 {mode_tag}\n"
+            f"🧠 TradingBrain V9 啟動 {mode_tag}\n"
             f"📊 {len(DEFAULT_WATCHLIST)} 幣種 | 📋 {summary['strategy_text']}\n"
             f"🛡 {summary['risk_text']}"
         )

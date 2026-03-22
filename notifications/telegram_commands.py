@@ -207,7 +207,7 @@ class TelegramCommandHandler:
     async def _cmd_help(self, chat_id: str) -> None:
         """📖 指令列表"""
         msg = (
-            "📖 TradingBrain V8 指令選單\n"
+            "📖 TradingBrain V9 指令選單\n"
             "━━━━━━━━━━━━━━━━━━\n\n"
             "💰 /資金 (/balance)\n"
             "查詢交易所即時 USDT 餘額，確認目前可用資金\n\n"

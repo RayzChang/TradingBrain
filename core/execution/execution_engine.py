@@ -1,8 +1,8 @@
-﻿"""
-?瑁?撘? ??銝脫憸冽蝯??馳摰??柴神??DB
+"""
+交易執行引擎：下單、寫入 DB
 
-- 璅⊥嚗8嚗?BINANCE_TESTNET=true 銝?API Key 撌脰身摰?????Testnet 銝
-- 撖衣嚗9嚗?BINANCE_TESTNET=false?RADING_MODE=live 銝?API Key 撌脰身摰????冽迤撘?銝
+- Testnet：BINANCE_TESTNET=true 且有 API Key 時走 Testnet 交易
+- 實盤：BINANCE_TESTNET=false, TRADING_MODE=live 且有 API Key 時走實盤
 """
 
 from datetime import datetime, timezone
@@ -77,14 +77,10 @@ def _build_trade_open_message(
 
 
 def is_trading_enabled() -> bool:
-    """
-    ?臬?瑁??祕銝嚗estnet ?祕?歹???
-    - Testnet嚗INANCE_TESTNET=true 銝?API Key 撌脰身摰?
-    - 撖衣嚗INANCE_TESTNET=false?RADING_MODE=live 銝?API Key 撌脰身摰???蝣箄??脰炊閫賂?
-    """
+    """判斷是否啟用交易（Testnet 或實盤）。"""
     if not BINANCE_API_KEY:
         return False
-    # paper 璅∪?瘞賊?銝?鈭斗??嚗璅⊥?漱撖?DB嚗?
+    # paper 模式不真正下單（只記 DB）
     if TRADING_MODE == "paper":
         return False
     if BINANCE_TESTNET:
@@ -99,19 +95,7 @@ async def execute_trade(
     db: "DatabaseManager",
     strategy_name: str = "",
 ) -> Optional[int]:
-    """
-    靘◢?抒??鈭斗??銝??孵嚗???撖怠 trades 銵具?
-
-    Args:
-        signal: ???行捱?漱?縑??
-        risk_result: 憸冽??蝯?嚗ize_usdt, leverage, stop_loss, take_profit嚗?
-        entry_price: ?嗅?/?脣??
-        db: 鞈?摨怎恣?
-        strategy_name: 蝑?迂嚗敺?signal.strategy_name ??嚗?
-
-    Returns:
-        ??????DB trade id嚗?瑁??仃????None
-    """
+    """執行交易：下單到交易所並寫入 trades 表。"""
     if not risk_result.passed:
         return None
 
@@ -148,11 +132,11 @@ async def execute_trade(
         getattr(risk_result, "structure_stop_floor_triggered", False)
     )
 
-    # === paper 璅∪?嚗芋?祆?鈭歹?撖?DB嚗??漱??嚗?==
+        # === paper 模式：不真正下單，只記 DB ===
     if TRADING_MODE == "paper":
         quantity_base = size_usdt / entry_price if entry_price else 0
         if quantity_base <= 0:
-            logger.warning(f"paper execute_trade: entry_price ?⊥? {entry_price}")
+            logger.warning(f"paper execute_trade: entry_price 無效 {entry_price}")
             return None
         opened_at = datetime.now(timezone.utc).isoformat()
         trade_data = {
@@ -228,14 +212,14 @@ async def execute_trade(
 
     if not is_trading_enabled():
         logger.info(
-            f"鈭斗??芸??? {symbol} {signal.signal_type} "
-            f"size={size_usdt}U sl={stop_loss} (??log嚗銝)"
+                        f"交易功能未啟用 {symbol} {signal.signal_type} "
+                        f"size={size_usdt}U sl={stop_loss} (僅記 log)"
         )
         return None
 
     quantity_base = size_usdt / entry_price if entry_price else 0
     if quantity_base <= 0:
-        logger.warning(f"execute_trade: entry_price ?⊥? {entry_price}")
+        logger.warning(f"execute_trade: entry_price 無效 {entry_price}")
         return None
 
     client = BinanceFuturesClient()
@@ -244,15 +228,17 @@ async def execute_trade(
     try:
         await client.set_leverage(symbol, leverage)
     except Exception as e:
-        logger.warning(f"set_leverage({leverage}x) 憭望?: {e}")
-        # Testnet 撣詨?擃?獢踹? 400嚗??.env ?身瑽▼?岫銝甈?
+        logger.warning(f"set_leverage({leverage}x) 失敗: {e}")
+        # Testnet 可能不支援高槓桿，fallback 到安全值
         use_leverage = max(1, min(DEFAULT_LEVERAGE, 25))
         try:
             await client.set_leverage(symbol, use_leverage)
         except Exception as e2:
-            logger.error(f"set_leverage({use_leverage}x) 隞仃???箏??刻絲閬?銝: {e2}")
+            logger.error(f"set_leverage({use_leverage}x) 也失敗，放棄開倉: {e2}")
             return None
-        logger.info(f"撌脫?冽?獢?{use_leverage}x 蝜潛?銝")
+        logger.info(f"槓桿降級為 {use_leverage}x（原始 {leverage}x 不可用）")
+    # 統一用實際生效的槓桿，確保 DB/通知/計算一致
+    leverage = use_leverage
 
     order_id = await client.place_market_order(symbol, side_binance, quantity_base)
     if order_id is None:
