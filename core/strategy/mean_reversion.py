@@ -171,7 +171,7 @@ class MeanReversionStrategy(BaseStrategy):
             )
             if near_range_low and dist_lower <= self.bb_touch_threshold and rsi_f <= self.long_rsi_ceiling:
                 # 動量門檻：K 線群體動量太空不做多（反轉失敗率高）
-                if candle_ctx.momentum_score < -0.3:
+                if candle_ctx.momentum_score < -0.2:
                     logger.debug(
                         f"{self.name} LONG blocked: {symbol} momentum={candle_ctx.momentum_score:.2f} too bearish for MR long"
                     )
@@ -248,7 +248,7 @@ class MeanReversionStrategy(BaseStrategy):
             )
             if near_range_high and dist_upper <= self.bb_touch_threshold and rsi_f >= self.short_rsi_floor:
                 # 動量門檻：K 線群體動量太多不做空（反轉失敗率高）
-                if candle_ctx.momentum_score > 0.3:
+                if candle_ctx.momentum_score > 0.2:
                     logger.debug(
                         f"{self.name} SHORT blocked: {symbol} momentum={candle_ctx.momentum_score:.2f} too bullish for MR short"
                     )

@@ -104,16 +104,15 @@ def test_trend_following_short_requires_bounce_failure_and_breakdown() -> None:
     assert signals[0].indicators["continuation_break_confirmed"] is True
 
 
-def test_trend_following_short_rejects_breakdown_without_bounce_failure() -> None:
-    """No short when candle shape lacks upper wick AND candle context momentum is neutral."""
+def test_trend_following_short_rejects_bullish_candle_shape() -> None:
+    """No short when last candle is bullish (close > open) — shape gate blocks."""
     df = pd.DataFrame(
         [
-            # Mixed candles: alternating bullish/bearish so momentum ~0 (no candle_context confirm)
             {"open": 104.0, "high": 105.0, "low": 103.5, "close": 104.8, "ema_9": 104.9, "ema_21": 105.3, "ema_50": 106.4, "adx": 24, "adx_pos": 15, "adx_neg": 22, "rsi": 48, "macd_hist": -0.12},
             {"open": 104.8, "high": 105.2, "low": 103.0, "close": 103.5, "ema_9": 103.8, "ema_21": 104.8, "ema_50": 106.0, "adx": 26, "adx_pos": 14, "adx_neg": 24, "rsi": 43, "macd_hist": -0.18},
-            {"open": 103.0, "high": 105.0, "low": 102.5, "close": 104.8, "ema_9": 103.0, "ema_21": 104.0, "ema_50": 105.4, "adx": 27, "adx_pos": 14, "adx_neg": 24, "rsi": 42, "macd_hist": -0.20},
-            # Last candle: bearish but no upper wick (straight drop, no bounce failure)
-            {"open": 101.9, "high": 102.1, "low": 100.9, "close": 101.0, "ema_9": 102.2, "ema_21": 103.5, "ema_50": 104.8, "adx": 30, "adx_pos": 13, "adx_neg": 28, "rsi": 36, "macd_hist": -0.24},
+            {"open": 103.5, "high": 104.0, "low": 102.5, "close": 103.0, "ema_9": 103.0, "ema_21": 104.0, "ema_50": 105.4, "adx": 27, "adx_pos": 14, "adx_neg": 24, "rsi": 42, "macd_hist": -0.20},
+            # Last candle: bullish (close > open) — wrong shape for SHORT
+            {"open": 101.0, "high": 102.5, "low": 100.9, "close": 102.2, "ema_9": 102.2, "ema_21": 103.5, "ema_50": 104.8, "adx": 30, "adx_pos": 13, "adx_neg": 28, "rsi": 36, "macd_hist": -0.24},
         ]
     )
     strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)

@@ -231,16 +231,10 @@ class TrendFollowingStrategy(BaseStrategy):
                         recent_pullback_low <= ema21_curr * (1 + self.ema_pullback_tolerance)
                         and recent_pullback_low >= ema50_curr * (1 - self.ema50_fail_tolerance)
                     )
-                    _candle_shape_ok = bool(
+                    bullish_rejection_ok = bool(
                         close_curr_f > open_curr_f
                         and close_curr_f >= (low_curr + candle_range * 0.6)
                     )
-                    _candle_confirm = bool(
-                        candle_confirm_bullish
-                        or candle_ctx.momentum_score > 0.2
-                        or candle_ctx.rejection_count >= 2
-                    )
-                    bullish_rejection_ok = _candle_shape_ok and _candle_confirm
                     bullish_trigger_ok = bool(
                         close_curr_f > ema9_curr
                         and close_curr_f > prev_close
@@ -288,6 +282,17 @@ class TrendFollowingStrategy(BaseStrategy):
                 return signals
             strength = min(0.5 + (adx - self.adx_min) / 50.0, 1.0)
             strength = max(0.0, strength)
+
+            # K 線確認（軟因子）：有確認加分，沒確認扣分
+            _has_candle_confirm = bool(
+                candle_confirm_bullish
+                or candle_ctx.momentum_score > 0.1
+                or candle_ctx.rejection_count >= 2
+            )
+            if _has_candle_confirm:
+                strength = min(strength + 0.1, 1.0)
+            else:
+                strength = strength * 0.75
 
             if candle_bonus.get("bullish", 0) > 0:
                 strength = min(strength + 0.15, 1.0)
@@ -382,16 +387,10 @@ class TrendFollowingStrategy(BaseStrategy):
                 recent_pullback_high >= ema21_curr * (1 - self.ema_pullback_tolerance)
                 and recent_pullback_high <= ema50_curr * (1 + self.ema50_fail_tolerance)
             )
-            _candle_shape_ok_s = bool(
+            bearish_rejection_ok = bool(
                 close_curr_f < open_curr_f
                 and close_curr_f <= (high_curr - candle_range * 0.6)
             )
-            _candle_confirm_s = bool(
-                candle_confirm_bearish
-                or candle_ctx.momentum_score < -0.2
-                or candle_ctx.rejection_count >= 2
-            )
-            bearish_rejection_ok = _candle_shape_ok_s and _candle_confirm_s
             bearish_trigger_ok = bool(
                 close_curr_f < ema9_curr
                 and close_curr_f < prev_close
@@ -439,6 +438,17 @@ class TrendFollowingStrategy(BaseStrategy):
                 return signals
             strength = min(0.5 + (adx - self.adx_min) / 50.0, 1.0)
             strength = max(0.0, strength)
+
+            # K 線確認（軟因子）
+            _has_candle_confirm_s = bool(
+                candle_confirm_bearish
+                or candle_ctx.momentum_score < -0.1
+                or candle_ctx.rejection_count >= 2
+            )
+            if _has_candle_confirm_s:
+                strength = min(strength + 0.1, 1.0)
+            else:
+                strength = strength * 0.75
 
             if candle_bonus.get("bearish", 0) > 0:
                 strength = min(strength + 0.15, 1.0)
