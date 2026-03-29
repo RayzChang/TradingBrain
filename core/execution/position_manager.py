@@ -20,6 +20,8 @@ from notifications.telegram_notify import send_telegram_message
 if TYPE_CHECKING:
     from database.db_manager import DatabaseManager
 
+SYNC_DUST_NOTIONAL_USDT = 10.0
+
 
 def _trade_exit_profile(trade: dict):
     """Return the shared exit profile for the trade strategy."""
@@ -59,6 +61,26 @@ async def sync_positions_from_exchange(
             continue
 
         side = "LONG" if amount > 0 else "SHORT"
+        entry_price = float(position.get("entryPrice", 0) or 0)
+        quantity = abs(amount)
+        notional_usdt = quantity * entry_price
+
+        if 0 < notional_usdt < SYNC_DUST_NOTIONAL_USDT:
+            close_side = "SELL" if side == "LONG" else "BUY"
+            order_id = await client.close_position_market(symbol, close_side, quantity)
+            if order_id is not None:
+                logger.info(
+                    "sync_positions auto-closed dust position "
+                    f"{symbol} {side} qty={quantity:.6f} "
+                    f"notional={notional_usdt:.2f}U"
+                )
+                continue
+            logger.warning(
+                "sync_positions failed to auto-close dust position; "
+                f"importing anyway: {symbol} {side} qty={quantity:.6f} "
+                f"notional={notional_usdt:.2f}U"
+            )
+
         exchange_keys.add((symbol, side))
 
         open_trades = db.get_open_trades()
@@ -69,8 +91,6 @@ async def sync_positions_from_exchange(
         if found:
             continue
 
-        entry_price = float(position.get("entryPrice", 0) or 0)
-        quantity = abs(amount)
         trade_data = {
             "symbol": symbol,
             "side": side,
@@ -390,6 +410,11 @@ def _soft_stop_confirmed(
     return _check_consecutive_closes(candles_5m, side, soft_stop, 1)
 
 
+OBSERVATION_TIMEOUT_SEC = 1800  # 30 分鐘 CONSOLIDATING 上限
+TIME_STOP_BREAKEVEN_SEC = 4 * 3600   # tp_stage==0 且持倉 >4h → 止損移至 entry
+TIME_STOP_EXIT_SEC = 8 * 3600        # tp_stage==0 且持倉 >8h → 平倉
+
+
 async def run_position_check(
     db: "DatabaseManager",
     client: BinanceFuturesClient | None,
@@ -397,6 +422,7 @@ async def run_position_check(
     *,
     recent_candles: dict[str, dict[str, list[dict]] | list[dict]] | None = None,
     risk_manager=None,
+    observation_state: dict | None = None,
 ) -> None:
     """Apply TP/SL/trailing logic to all open trades using the latest prices."""
     for trade in db.get_open_trades():
@@ -614,6 +640,50 @@ async def run_position_check(
                 lowest_price=lowest if side == "SHORT" else None,
             )
 
+        # --- 時間止損: tp_stage==0 久持未獲利 ---
+        if tp_stage == 0:
+            opened_at_str = trade.get("opened_at")
+            if opened_at_str:
+                try:
+                    dt_opened = datetime.fromisoformat(
+                        opened_at_str.replace("Z", "+00:00")
+                    )
+                    if dt_opened.tzinfo is None:
+                        dt_opened = dt_opened.replace(tzinfo=timezone.utc)
+                    hold_sec = (
+                        datetime.now(timezone.utc) - dt_opened
+                    ).total_seconds()
+                except Exception:
+                    hold_sec = 0.0
+
+                if hold_sec >= TIME_STOP_EXIT_SEC:
+                    await _full_close(db, client, trade, current, "TIME_STOP")
+                    send_telegram_message(
+                        f"⏰ TIME_STOP {symbol} {side} | 持倉 {hold_sec/3600:.1f}h "
+                        f"未達 TP1，平倉 @ {current:.4f}"
+                    )
+                    if risk_manager and hasattr(risk_manager, "update_equity_high_water_mark"):
+                        await _update_hwm(client, risk_manager)
+                    continue
+                elif hold_sec >= TIME_STOP_BREAKEVEN_SEC and entry > 0:
+                    # 止損移至 entry price（breakeven）
+                    be_stop = entry
+                    if _is_better_stop(side, be_stop, soft_stop):
+                        soft_stop = be_stop
+                        hard_stop = _derive_hard_stop_from_soft(
+                            soft_stop, side, atr, family
+                        )
+                        db.update_trade_protection(
+                            trade_id,
+                            soft_stop_loss=soft_stop,
+                            hard_stop_loss=hard_stop,
+                            soft_stop_required_closes=soft_stop_required,
+                        )
+                        logger.info(
+                            f"TIME_BREAKEVEN: {symbol} {side} held {hold_sec/3600:.1f}h, "
+                            f"soft_stop moved to entry {entry:.4f}"
+                        )
+
         if hard_stop:
             hard_hit = (side == "LONG" and current <= hard_stop) or (
                 side == "SHORT" and current >= hard_stop
@@ -645,25 +715,52 @@ async def run_position_check(
                     soft_stop,
                     hard_stop,
                 )
+                obs = observation_state if observation_state is not None else {}
+                obs_key = f"{trade_id}"
+                now = datetime.now(timezone.utc)
+
                 if behavior == "CONFIRMED_BREAKDOWN":
                     exit_reason = "OBSERVATION_STOP"
                     if tp_stage == 1:
                         exit_reason = "OBSERVATION_STOP_AFTER_TP1"
                     elif tp_stage == 2:
                         exit_reason = "OBSERVATION_STOP_AFTER_TP2"
+                    obs.pop(obs_key, None)
                     await _full_close(db, client, trade, current, exit_reason)
                     if risk_manager and hasattr(risk_manager, "update_equity_high_water_mark"):
                         await _update_hwm(client, risk_manager)
                 elif behavior == "WICK_REVERSAL":
+                    obs.pop(obs_key, None)
                     logger.debug(
                         f"Observation: {symbol} {side} wick reversal detected at "
                         f"soft_stop={soft_stop:.4f}, keeping position"
                     )
                 elif behavior == "CONSOLIDATING":
-                    logger.debug(
-                        f"Observation: {symbol} {side} consolidating near "
-                        f"soft_stop={soft_stop:.4f}, monitoring..."
-                    )
+                    # 開始計時或檢查是否超過 30 分鐘
+                    if obs_key not in obs:
+                        obs[obs_key] = now
+                    elapsed = (now - obs[obs_key]).total_seconds()
+                    if elapsed >= OBSERVATION_TIMEOUT_SEC:
+                        exit_reason = "OBSERVATION_STOP_TIMEOUT"
+                        if tp_stage == 1:
+                            exit_reason = "OBSERVATION_STOP_TIMEOUT_AFTER_TP1"
+                        elif tp_stage == 2:
+                            exit_reason = "OBSERVATION_STOP_TIMEOUT_AFTER_TP2"
+                        obs.pop(obs_key, None)
+                        logger.info(
+                            f"Observation timeout: {symbol} {side} consolidating "
+                            f"{elapsed:.0f}s >= {OBSERVATION_TIMEOUT_SEC}s, closing"
+                        )
+                        await _full_close(db, client, trade, current, exit_reason)
+                        if risk_manager and hasattr(risk_manager, "update_equity_high_water_mark"):
+                            await _update_hwm(client, risk_manager)
+                    else:
+                        logger.debug(
+                            f"Observation: {symbol} {side} consolidating near "
+                            f"soft_stop={soft_stop:.4f}, {elapsed:.0f}s elapsed..."
+                        )
+                else:
+                    obs.pop(obs_key, None)
 
 
 async def _update_hwm(client, risk_manager) -> None:

@@ -41,57 +41,64 @@ def get_structure_stop_floor_mult(strategy_name: str) -> float | None:
     """Minimum ATR distance allowed when a structure stop overrides the ATR fallback."""
     family = normalize_strategy_family(strategy_name)
     if family == "breakout":
-        return 2.0
+        return 1.5
     if family == "trend_following":
-        return 1.2
-    if family == "mean_reversion":
         return 0.8
+    if family == "mean_reversion":
+        return 0.5
     return None
 
 
-def _recent_swing_low(df: pd.DataFrame, lookback: int = 96, order: int = 3) -> float | None:
+def _recent_swing_low(df: pd.DataFrame, lookback: int = 192, order: int = 5) -> float | None:
     """Find the most recent swing low with meaningful structure.
 
-    ``lookback=96`` on 15m data covers ~24 hours.
-    ``order=3`` requires the bar to be the lowest within 3 bars on each side
-    (45-minute wing on 15m), filtering out noise.
+    ``lookback=192`` on 15m data covers ~48 hours.
+    ``order=5`` requires the bar to be the lowest within 5 bars on each side
+    (75-minute wing on 15m). Falls back to order=3 then order=2 if no swing found.
     """
     if df.empty or "low" not in df.columns:
         return None
     window = df.tail(lookback).reset_index(drop=True)
     lows = window["low"].tolist()
-    candidates: list[float] = []
-    for idx in range(order, len(lows) - order):
-        value = lows[idx]
-        if all(value <= lows[idx - step] for step in range(1, order + 1)) and all(
-            value <= lows[idx + step] for step in range(1, order + 1)
-        ):
-            candidates.append(float(value))
-    if candidates:
-        return candidates[-1]
+
+    for try_order in (order, 3, 2):
+        candidates: list[float] = []
+        for idx in range(try_order, len(lows) - try_order):
+            value = lows[idx]
+            if all(value <= lows[idx - step] for step in range(1, try_order + 1)) and all(
+                value <= lows[idx + step] for step in range(1, try_order + 1)
+            ):
+                candidates.append(float(value))
+        if candidates:
+            return candidates[-1]
+
     value = float(window["low"].iloc[-min(20, len(window)):].min())
     return value if value > 0 else None
 
 
-def _recent_swing_high(df: pd.DataFrame, lookback: int = 96, order: int = 3) -> float | None:
+def _recent_swing_high(df: pd.DataFrame, lookback: int = 192, order: int = 5) -> float | None:
     """Find the most recent swing high with meaningful structure.
 
-    ``lookback=96`` on 15m data covers ~24 hours.
-    ``order=3`` requires the bar to be the highest within 3 bars on each side.
+    ``lookback=192`` on 15m data covers ~48 hours.
+    ``order=5`` requires the bar to be the highest within 5 bars on each side.
+    Falls back to order=3 then order=2 if no swing found.
     """
     if df.empty or "high" not in df.columns:
         return None
     window = df.tail(lookback).reset_index(drop=True)
     highs = window["high"].tolist()
-    candidates: list[float] = []
-    for idx in range(order, len(highs) - order):
-        value = highs[idx]
-        if all(value >= highs[idx - step] for step in range(1, order + 1)) and all(
-            value >= highs[idx + step] for step in range(1, order + 1)
-        ):
-            candidates.append(float(value))
-    if candidates:
-        return candidates[-1]
+
+    for try_order in (order, 3, 2):
+        candidates: list[float] = []
+        for idx in range(try_order, len(highs) - try_order):
+            value = highs[idx]
+            if all(value >= highs[idx - step] for step in range(1, try_order + 1)) and all(
+                value >= highs[idx + step] for step in range(1, try_order + 1)
+            ):
+                candidates.append(float(value))
+        if candidates:
+            return candidates[-1]
+
     value = float(window["high"].iloc[-min(20, len(window)):].max())
     return value if value > 0 else None
 

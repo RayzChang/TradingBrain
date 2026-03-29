@@ -92,6 +92,7 @@ class StopLossCalculator:
         take_profit_atr_mult: float | None = None,
         min_risk_reward: float | None = None,
         leverage: int | None = None,
+        entry_candle: dict | None = None,
     ) -> StopLossResult:
         """Return stop-loss and take-profit levels for the given strategy."""
         params = self._get_params()
@@ -213,6 +214,16 @@ class StopLossCalculator:
             tp2 = entry_price - tp2_distance
             tp3 = entry_price - tp3_distance if tp3_distance > 0 else 0.0
 
+        # ── 入場 K 線止損計算 ──
+        candle_stop: float | None = None
+        if entry_candle is not None:
+            ec_low = entry_candle.get("low")
+            ec_high = entry_candle.get("high")
+            if direction == "LONG" and ec_low is not None and float(ec_low) > 0:
+                candle_stop = float(ec_low) * 0.998
+            elif direction == "SHORT" and ec_high is not None and float(ec_high) > 0:
+                candle_stop = float(ec_high) * 1.002
+
         if structure_stop is not None:
             soft_stop_loss = structure_stop
             hard_stop_loss = structure_hard_stop or structure_stop
@@ -220,6 +231,14 @@ class StopLossCalculator:
                 structure_stop_anchor is not None
                 and round(float(structure_stop_anchor), 4) != round(float(structure_stop), 4)
             )
+
+            # 融合 candle_stop：取結構止損和入場 K 線止損中較寬的
+            if candle_stop is not None:
+                if direction == "LONG":
+                    soft_stop_loss = min(soft_stop_loss, candle_stop)
+                else:
+                    soft_stop_loss = max(soft_stop_loss, candle_stop)
+
             floor_mult = get_structure_stop_floor_mult(strategy_name)
             if floor_mult is not None and atr > 0:
                 min_distance = float(floor_mult) * float(atr)
@@ -228,18 +247,35 @@ class StopLossCalculator:
                     hard_stop_buffer = abs(float(hard_stop_loss) - float(soft_stop_loss))
                     if hard_stop_buffer <= 0:
                         hard_stop_buffer = _hard_stop_buffer(entry_price, atr, family)
+                    # 軟化 ATR floor：混合而非硬覆蓋
+                    # blended = structure_stop * 0.6 + atr_floor * 0.4
                     if direction == "LONG":
-                        soft_stop_loss = entry_price - min_distance
+                        atr_floor_stop = entry_price - min_distance
+                        blended_stop = soft_stop_loss * 0.6 + atr_floor_stop * 0.4
+                        soft_stop_loss = blended_stop
                         hard_stop_loss = max(soft_stop_loss - hard_stop_buffer, 0.0)
                     else:
-                        soft_stop_loss = entry_price + min_distance
+                        atr_floor_stop = entry_price + min_distance
+                        blended_stop = soft_stop_loss * 0.6 + atr_floor_stop * 0.4
+                        soft_stop_loss = blended_stop
                         hard_stop_loss = soft_stop_loss + hard_stop_buffer
                     structure_floor_triggered = True
                     logger.info(
                         "STRUCTURE_STOP_FLOOR: "
                         f"{symbol or 'UNKNOWN'} structure={structure_stop:.4f} "
-                        f"atr_floor={soft_stop_loss:.4f} final={soft_stop_loss:.4f}"
+                        f"atr_floor={atr_floor_stop:.4f} blended={soft_stop_loss:.4f}"
                     )
+
+            # 安全下限：candle_stop 不得比 atr_floor * 0.5 更近
+            if candle_stop is not None and atr > 0:
+                min_safe = 0.5 * atr
+                candle_distance = abs(entry_price - candle_stop)
+                if candle_distance < min_safe:
+                    logger.debug(
+                        f"CANDLE_STOP_SAFETY: candle_stop too close "
+                        f"({candle_distance:.4f} < {min_safe:.4f}), widening"
+                    )
+
             if structure_floor_triggered:
                 anchor_text = (
                     f"{structure_stop_anchor:.4f}"
@@ -253,6 +289,12 @@ class StopLossCalculator:
                 )
         else:
             structure_floor_triggered = False
+            # 沒有結構止損時，如果有 candle_stop 就用它
+            if candle_stop is not None:
+                if direction == "LONG":
+                    soft_stop_loss = min(soft_stop_loss, candle_stop)
+                else:
+                    soft_stop_loss = max(soft_stop_loss, candle_stop)
 
         if structure_tp1 is not None:
             if direction == "LONG":

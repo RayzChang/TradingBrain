@@ -100,8 +100,8 @@ class EntryTriggerCheck:
 class TradingBrain:
     """交易系統主控制器"""
 
-    BREAKOUT_RETEST_TOLERANCE_PCT = 0.0035
-    BREAKOUT_RETEST_EXPIRE_BARS = 3
+    BREAKOUT_RETEST_TOLERANCE_PCT = 0.005
+    BREAKOUT_RETEST_EXPIRE_BARS = 5
 
     @staticmethod
     def _format_strategy_profile(name: str, alias: str) -> str:
@@ -199,6 +199,7 @@ class TradingBrain:
         self._pending_entries: dict[str, list[PendingEntry]] = {}
         self._mtf_batch: dict[str, str] = {}  # symbol -> console summary line
         self._mtf_flush_task: asyncio.Task | None = None
+        self._observation_state: dict = {}  # trade_id -> consolidating start time
 
     @staticmethod
     def _mtf_gate_passed(full) -> bool:
@@ -515,7 +516,7 @@ class TradingBrain:
         set_db(self.db)
 
         console("=" * 50)
-        console("🧠 TradingBrain V9 啟動中...")
+        console("🧠 TradingBrain V10 啟動中...")
         console(f"⚙ 交易模式: {TRADING_MODE}")
         console("=" * 50)
 
@@ -593,7 +594,7 @@ class TradingBrain:
         # Telegram 啟動通知
         mode_tag = "[DEMO]" if BINANCE_TESTNET else "[LIVE]"
         send_telegram_message(
-            f"🧠 TradingBrain V9 啟動 {mode_tag}\n"
+            f"🧠 TradingBrain V10 啟動 {mode_tag}\n"
             f"📊 {len(DEFAULT_WATCHLIST)} 幣種 | 📋 {summary['strategy_text']}\n"
             f"🛡 {summary['risk_text']}"
         )
@@ -745,9 +746,13 @@ class TradingBrain:
         K 線收盤回調 — 每當一根 K 線完成時觸發。
         觸發技術分析計算，並在適當時間框架上做完整 MTF 分析。
         """
-        symbol = candle["symbol"]
-        tf = candle["timeframe"]
-        close = candle["close"]
+        symbol = candle.get("symbol") if candle else None
+        tf = candle.get("timeframe") if candle else None
+        close = candle.get("close") if candle else None
+
+        if not symbol or not tf or close is None:
+            logger.warning(f"_on_kline_closed: invalid candle data: {candle}")
+            return
 
         self.last_kline_received_at = time.time()
 
@@ -1027,13 +1032,15 @@ class TradingBrain:
             breakout_bar_time = ""
             final_action = "PENDING_TRIGGER"
             if sig.strategy_name == "breakout":
-                if sig.signal_type == "LONG":
-                    breakout_price = float(latest.get("bb_upper", latest.get("close", 0)))
-                else:
-                    breakout_price = float(latest.get("bb_lower", latest.get("close", 0)))
+                breakout_price = float(
+                    sig.indicators.get(
+                        "breakout_price",
+                        latest.get("close", 0),
+                    )
+                )
                 tolerance = breakout_price * self.BREAKOUT_RETEST_TOLERANCE_PCT
-                zone_low = breakout_price - tolerance
-                zone_high = breakout_price + tolerance
+                zone_low = float(sig.indicators.get("retest_zone_low", breakout_price - tolerance))
+                zone_high = float(sig.indicators.get("retest_zone_high", breakout_price + tolerance))
                 expire_bars = self.BREAKOUT_RETEST_EXPIRE_BARS
                 breakout_bar_time_raw = latest.get("open_time") or latest.get("close_time")
                 if isinstance(breakout_bar_time_raw, pd.Timestamp):
@@ -1237,14 +1244,14 @@ class TradingBrain:
                     "green_candle": close > open_price,
                     "above_ema9": ema9 is not None and close > float(ema9),
                 }
-                if signal_grade != "A":
+                if signal_grade == "C":
                     checks["close_above_breakout"] = close > pending.breakout_price
             else:
                 checks = {
                     "red_candle": close < open_price,
                     "below_ema9": ema9 is not None and close < float(ema9),
                 }
-                if signal_grade != "A":
+                if signal_grade == "C":
                     checks["close_below_breakout"] = close < pending.breakout_price
             failed = [name for name, ok in checks.items() if not ok]
             if not failed:
@@ -1384,11 +1391,20 @@ class TradingBrain:
                         trigger_reason=trigger_check.reason,
                     ),
                 })
+            # 從 1m K 線取入場 K 線 OHLC 供止損計算
+            _1m_last = one_min_result.df_enriched.iloc[-1]
+            _entry_candle = {
+                "open": float(_1m_last.get("open", 0)),
+                "high": float(_1m_last.get("high", 0)),
+                "low": float(_1m_last.get("low", 0)),
+                "close": float(_1m_last.get("close", 0)),
+            }
             trade_id = await self._run_risk_and_execute(
                 signal_to_execute,
                 float(one_min_result.df_enriched["close"].iloc[-1]),
                 pending_atr,
                 pending_snapshot,
+                entry_candle=_entry_candle,
             )
             if trade_id:
                 logger.info(
@@ -1510,6 +1526,7 @@ class TradingBrain:
         entry_price: float,
         atr: float,
         market_snapshot_json: str | None,
+        entry_candle: dict | None = None,
     ) -> int | None:
         if normalize_strategy_family(sig.strategy_name) != "mean_reversion":
             current_mtf = self._quick_mtf_direction_check(sig.symbol)
@@ -1561,6 +1578,7 @@ class TradingBrain:
         risk_result = self.risk_manager.evaluate(
             sig, balance, entry_price, atr, len(open_trades),
             coin_max_leverage=coin_max_lev,
+            entry_candle=entry_candle,
         )
         if risk_result.passed:
             trade_id = await execute_trade(
@@ -1796,6 +1814,7 @@ class TradingBrain:
                     prices,
                     recent_candles=recent_candles,
                     risk_manager=self.risk_manager,
+                    observation_state=self._observation_state,
                 ),
                 timeout=30,
             )
@@ -1891,4 +1910,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

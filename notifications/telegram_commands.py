@@ -18,6 +18,14 @@ from config.settings import (
 
 _BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 _POLL_INTERVAL = 1.5  # seconds
+_MAX_POLL_BACKOFF = 30.0
+_TRANSIENT_POLL_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadError,
+    httpx.ReadTimeout,
+    httpx.RemoteProtocolError,
+)
 
 
 def _reply(chat_id: str, text: str) -> None:
@@ -41,6 +49,7 @@ class TelegramCommandHandler:
         """brain is the TradingBrainEngine instance."""
         self.brain = brain
         self._offset = 0
+        self._poll_failures = 0
 
     async def start(self) -> None:
         """Start polling loop — run as asyncio task."""
@@ -49,13 +58,52 @@ class TelegramCommandHandler:
             return
         logger.info("📱 Telegram 指令監聽啟動")
         while True:
+            sleep_seconds = _POLL_INTERVAL
             try:
                 await self._poll()
+                self._record_poll_success()
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.error(f"Telegram poll error: {exc}")
-            await asyncio.sleep(_POLL_INTERVAL)
+                sleep_seconds = self._record_poll_failure(exc)
+            await asyncio.sleep(sleep_seconds)
+
+    def _poll_backoff_seconds(self) -> float:
+        """Return the retry delay for the current transient failure streak."""
+        exponent = min(max(self._poll_failures - 1, 0), 4)
+        return min(_POLL_INTERVAL * (2**exponent), _MAX_POLL_BACKOFF)
+
+    def _record_poll_failure(self, exc: Exception) -> float:
+        """Record a polling failure and choose log level / retry delay."""
+        self._poll_failures += 1
+        retry_in = self._poll_backoff_seconds()
+
+        if isinstance(exc, _TRANSIENT_POLL_ERRORS):
+            if (
+                self._poll_failures == 1
+                or self._poll_failures in {3, 10}
+                or self._poll_failures % 30 == 0
+            ):
+                logger.warning(
+                    "Telegram poll transient network error "
+                    f"({type(exc).__name__}) failure #{self._poll_failures}; "
+                    f"retrying in {retry_in:.1f}s: {exc!r}"
+                )
+            return retry_in
+
+        logger.exception(
+            f"Telegram poll error ({type(exc).__name__}): {exc!r}"
+        )
+        return retry_in
+
+    def _record_poll_success(self) -> None:
+        """Reset failure streak after a successful poll."""
+        if self._poll_failures:
+            logger.info(
+                "Telegram poll recovered after "
+                f"{self._poll_failures} consecutive failure(s)"
+            )
+            self._poll_failures = 0
 
     async def _poll(self) -> None:
         """Fetch new updates via getUpdates."""
@@ -198,7 +246,7 @@ class TelegramCommandHandler:
 
         msg = (
             f"📡 系統狀態\n"
-            f"🏷 V9 [{mode}] | 模式: {trade_mode}\n"
+            f"🏷 V10 [{mode}] | 模式: {trade_mode}\n"
             f"📦 持倉: {open_count}{bal_str}\n"
             f"🕐 {datetime.now(APP_TIMEZONE).strftime('%Y-%m-%d %H:%M')} ({APP_TIMEZONE_NAME})"
         )
@@ -207,7 +255,7 @@ class TelegramCommandHandler:
     async def _cmd_help(self, chat_id: str) -> None:
         """📖 指令列表"""
         msg = (
-            "📖 TradingBrain V9 指令選單\n"
+            "📖 TradingBrain V10 指令選單\n"
             "━━━━━━━━━━━━━━━━━━\n\n"
             "💰 /資金 (/balance)\n"
             "查詢交易所即時 USDT 餘額，確認目前可用資金\n\n"

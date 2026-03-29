@@ -19,6 +19,31 @@ from config.settings import APP_TIMEZONE, DB_PATH
 from database.models import INDEXES, TABLES
 
 
+def _json_safe_value(value: Any) -> Any:
+    """Recursively normalize numpy/pandas scalars into JSON-safe Python types."""
+    if isinstance(value, dict):
+        return {key: _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    if hasattr(value, "item") and callable(value.item):
+        try:
+            return _json_safe_value(value.item())
+        except Exception:
+            pass
+
+    module_name = getattr(value.__class__, "__module__", "")
+    if module_name.startswith("pandas") and hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+
+    return value
+
+
 class DatabaseManager:
     """SQLite database manager running in WAL mode."""
 
@@ -301,7 +326,7 @@ class DatabaseManager:
         self, name: str, value: Any, changed_by: str = "user"
     ) -> None:
         """Upsert a risk parameter and write a history row."""
-        value_str = json.dumps(value)
+        value_str = json.dumps(_json_safe_value(value), ensure_ascii=False)
 
         old_rows = self.execute(
             "SELECT param_value FROM risk_params WHERE param_name=?",
@@ -336,7 +361,10 @@ class DatabaseManager:
     def insert_signal(self, signal_data: dict) -> int:
         """Persist a generated trade signal."""
         if "indicators" in signal_data and isinstance(signal_data["indicators"], dict):
-            signal_data["indicators"] = json.dumps(signal_data["indicators"])
+            signal_data["indicators"] = json.dumps(
+                _json_safe_value(signal_data["indicators"]),
+                ensure_ascii=False,
+            )
 
         fields = ", ".join(signal_data.keys())
         placeholders = ", ".join(["?"] * len(signal_data))
@@ -370,7 +398,11 @@ class DatabaseManager:
         self, info_type: str, data: Any, symbol: Optional[str] = None
     ) -> None:
         """Persist market metadata such as funding or sentiment."""
-        data_str = json.dumps(data) if not isinstance(data, str) else data
+        data_str = (
+            json.dumps(_json_safe_value(data), ensure_ascii=False)
+            if not isinstance(data, str)
+            else data
+        )
         self.execute(
             "INSERT INTO market_info (info_type, symbol, data) VALUES (?, ?, ?)",
             (info_type, symbol, data_str),
@@ -425,7 +457,13 @@ class DatabaseManager:
         """Write a strategy decision log row."""
         market_snapshot = data.get("market_snapshot")
         if isinstance(market_snapshot, (dict, list)):
-            data = {**data, "market_snapshot": json.dumps(market_snapshot, ensure_ascii=False)}
+            data = {
+                **data,
+                "market_snapshot": json.dumps(
+                    _json_safe_value(market_snapshot),
+                    ensure_ascii=False,
+                ),
+            }
 
         sql = (
             "INSERT INTO analysis_logs "

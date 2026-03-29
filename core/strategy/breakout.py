@@ -1,15 +1,16 @@
-"""Breakout strategy with volume and momentum confirmation."""
+"""Breakout strategy built around real structure breaks."""
 
 import pandas as pd
 from loguru import logger
 
+from core.analysis.candle_context import analyze_candle_context
 from core.analysis.candlestick import PatternDirection
 from core.analysis.engine import AnalysisResult
 from core.strategy.base import BaseStrategy, MarketRegime, TradeSignal
 
 
 class BreakoutStrategy(BaseStrategy):
-    """Trade breakouts only when momentum confirms the move."""
+    """Trade structure breakouts only when momentum confirms the move."""
 
     allowed_regimes = [MarketRegime.TRENDING, MarketRegime.RANGING]
 
@@ -21,6 +22,7 @@ class BreakoutStrategy(BaseStrategy):
         breakout_body_threshold: float = 0.35,
         short_rsi_floor: float = 34.0,
         short_volume_mult: float = 1.5,
+        structure_lookback_bars: int = 20,
     ) -> None:
         self.volume_mult = volume_mult
         self.adx_rising_bars = adx_rising_bars
@@ -28,10 +30,19 @@ class BreakoutStrategy(BaseStrategy):
         self.breakout_body_threshold = breakout_body_threshold
         self.short_rsi_floor = short_rsi_floor
         self.short_volume_mult = short_volume_mult
+        self.structure_lookback_bars = structure_lookback_bars
 
     @property
     def name(self) -> str:
         return "breakout"
+
+    def _structure_levels(self, df: pd.DataFrame) -> tuple[float, float] | None:
+        if len(df) < self.structure_lookback_bars + 1:
+            return None
+        history = df.iloc[-(self.structure_lookback_bars + 1):-1]
+        structure_high = float(history["high"].max())
+        structure_low = float(history["low"].min())
+        return structure_high, structure_low
 
     def evaluate_single(
         self,
@@ -48,17 +59,7 @@ class BreakoutStrategy(BaseStrategy):
             return signals
 
         df = result.df_enriched
-        required = [
-            "open",
-            "high",
-            "low",
-            "close",
-            "bb_upper",
-            "bb_lower",
-            "volume",
-            "adx",
-            "macd_hist",
-        ]
+        required = ["open", "high", "low", "close", "volume", "adx", "macd_hist"]
         if not all(column in df.columns for column in required):
             return signals
 
@@ -68,16 +69,17 @@ class BreakoutStrategy(BaseStrategy):
         open_price = float(curr["open"])
         high = float(curr["high"])
         low = float(curr["low"])
-        bb_upper = float(curr["bb_upper"]) if not pd.isna(curr["bb_upper"]) else None
-        bb_lower = float(curr["bb_lower"]) if not pd.isna(curr["bb_lower"]) else None
         volume = float(curr["volume"])
         adx = float(curr["adx"]) if not pd.isna(curr["adx"]) else None
         adx_pos = float(curr["adx_pos"]) if "adx_pos" in df.columns and not pd.isna(curr["adx_pos"]) else None
         adx_neg = float(curr["adx_neg"]) if "adx_neg" in df.columns and not pd.isna(curr["adx_neg"]) else None
         rsi = float(curr["rsi"]) if "rsi" in df.columns and not pd.isna(curr["rsi"]) else None
 
-        if bb_upper is None or bb_lower is None or adx is None:
+        structure_levels = self._structure_levels(df)
+        if structure_levels is None or adx is None:
             return signals
+        structure_high, structure_low = structure_levels
+        box_height = max(structure_high - structure_low, 1e-9)
 
         avg_volume = df["volume"].iloc[-20:].mean()
         volume_confirmed = avg_volume > 0 and volume > avg_volume * self.volume_mult
@@ -89,14 +91,19 @@ class BreakoutStrategy(BaseStrategy):
         macd_expanding_bearish = macd_hist < macd_hist_prev and macd_hist < 0
 
         candle = self._candle_pattern_bonus(result)
+        candle_ctx = analyze_candle_context(df)
         bullish_breakout_confirmed = self._has_breakout_body(
             open_price, close, high, low, direction="LONG"
         )
         bearish_breakout_confirmed = self._has_breakout_body(
             open_price, close, high, low, direction="SHORT"
         )
+        # 突破 K 線影線分析
+        body = abs(close - open_price)
+        upper_wick = high - max(close, open_price)
+        lower_wick = min(close, open_price) - low
 
-        if close > bb_upper and float(prev["close"]) <= float(prev.get("bb_upper", bb_upper)):
+        if close > structure_high and float(prev["close"]) <= structure_high:
             if volume_confirmed and adx_rising and bullish_breakout_confirmed:
                 strength = 0.6
                 if macd_expanding_bullish:
@@ -105,8 +112,14 @@ class BreakoutStrategy(BaseStrategy):
                     strength += 0.1
                 if adx > 30:
                     strength += 0.1
+                # 突破 K 線有長下影線（不乾淨突破）→ 扣分
+                if body > 0 and lower_wick > body * 0.5:
+                    strength -= 0.1
+                # K 線群體動量不支持 → 扣分
+                if candle_ctx.momentum_score <= 0:
+                    strength -= 0.1
 
-                strength = min(strength, 1.0)
+                strength = max(min(strength, 1.0), 0.0)
                 signals.append(
                     TradeSignal(
                         symbol=symbol,
@@ -119,19 +132,22 @@ class BreakoutStrategy(BaseStrategy):
                             "volume_ratio": round(volume / avg_volume, 2),
                             "macd_expanding": macd_expanding_bullish,
                             "breakout_body_ok": bullish_breakout_confirmed,
-                            "bb_upper": round(bb_upper, 4),
+                            "breakout_price": round(structure_high, 4),
+                            "structure_high": round(structure_high, 4),
+                            "structure_low": round(structure_low, 4),
+                            "breakout_box_height": round(box_height, 4),
                             "close": round(close, 4),
                             "breakout_retest_status": "pending",
                         },
                         reason=(
-                            f"Bullish breakout above upper band with "
+                            f"Bullish structure breakout above {structure_high:.4f} with "
                             f"{volume / avg_volume:.1f}x volume and rising ADX"
                         ),
                     )
                 )
                 logger.debug(f"{self.name} LONG breakout: {symbol} {timeframe} ADX={adx:.1f}")
 
-        if close < bb_lower and float(prev["close"]) >= float(prev.get("bb_lower", bb_lower)):
+        if close < structure_low and float(prev["close"]) >= structure_low:
             adx_neg_dominant = (
                 adx_neg is not None
                 and adx_pos is not None
@@ -147,8 +163,14 @@ class BreakoutStrategy(BaseStrategy):
                     strength += 0.1
                 if adx > 30:
                     strength += 0.1
+                # 突破 K 線有長上影線（不乾淨突破）→ 扣分
+                if body > 0 and upper_wick > body * 0.5:
+                    strength -= 0.1
+                # K 線群體動量不支持 → 扣分
+                if candle_ctx.momentum_score >= 0:
+                    strength -= 0.1
 
-                strength = min(strength, 1.0)
+                strength = max(min(strength, 1.0), 0.0)
                 signals.append(
                     TradeSignal(
                         symbol=symbol,
@@ -167,12 +189,15 @@ class BreakoutStrategy(BaseStrategy):
                             "adx_neg_dominant": adx_neg_dominant,
                             "rsi_above_quality_floor": rsi_above_quality_floor,
                             "extra_volume_confirmed": extra_volume_confirmed,
-                            "bb_lower": round(bb_lower, 4),
+                            "breakout_price": round(structure_low, 4),
+                            "structure_high": round(structure_high, 4),
+                            "structure_low": round(structure_low, 4),
+                            "breakout_box_height": round(box_height, 4),
                             "close": round(close, 4),
                             "breakout_retest_status": "pending",
                         },
                         reason=(
-                            f"Bearish breakout below lower band with "
+                            f"Bearish structure breakout below {structure_low:.4f} with "
                             f"{volume / avg_volume:.1f}x volume and rising ADX"
                         ),
                     )

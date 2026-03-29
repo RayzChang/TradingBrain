@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-TradingBrain V9 is a Binance Futures automated trading system (testnet/research-focused). It consists of a Python backend (trading engine + FastAPI), a React/TypeScript frontend dashboard, Telegram notifications, and structure-first trade management with soft/hard stops.
+TradingBrain V10 is a Binance Futures automated trading system (testnet/research-focused). It consists of a Python backend (trading engine + FastAPI), a React/TypeScript frontend dashboard, Telegram notifications, and structure-first trade management with soft/hard stops.
 
 ## Commands
 
@@ -63,12 +63,12 @@ Hard gates at 4h/1h block invalid setups before 15m analysis runs.
 
 Managed via `pending_entry` dict in the main orchestration loop.
 
-### Risk Layer (`core/risk/`) — V9 Fixed-Margin Model
-- **V9**: Fixed-margin position sizing ($200-600 per trade, scaled by coin max leverage tier)
-- **V9**: Strategy-level leverage caps — Trend 20x / Breakout 25x / Mean Reversion 15x (overrides coin max)
-- **V9**: C-tier signal rejection — signal strength < 0.5 auto-rejected, no junk trades
-- **V9**: Fee-aware dynamic TP floor — TP minimums guarantee coverage of 2.5x round-trip fees
-- **V9**: Mean reversion min risk-reward raised to 1.5 (from 1.0)
+### Risk Layer (`core/risk/`) — V10 Fixed-Margin Model
+- **V10**: Fixed-margin position sizing ($200-600 per trade, scaled by coin max leverage tier)
+- **V10**: Strategy-level leverage caps — Trend 20x / Breakout 25x / Mean Reversion 15x (overrides coin max)
+- **V10**: C-tier signal rejection — signal strength < 0.5 auto-rejected, no junk trades
+- **V10**: Fee-aware dynamic TP floor — TP minimums guarantee coverage of 2.5x round-trip fees
+- **V10**: Mean reversion min risk-reward raised to 1.5 (from 1.0)
 - Per-coin max leverage from Binance API (BTC 125x, ETH 100x, ATOM 20x, etc.)
 - Full account balance as collateral (CROSSED mode, no balance division)
 - Dynamic stop-loss observation mode (wick detection vs confirmed breakdown)

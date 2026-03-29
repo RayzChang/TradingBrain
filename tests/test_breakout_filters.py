@@ -33,135 +33,109 @@ def _base_rows() -> list[dict]:
     for idx in range(30):
         rows.append(
             {
-                "open": 100 - idx * 0.2,
-                "high": 100.3 - idx * 0.2,
-                "low": 99.7 - idx * 0.2,
-                "close": 100 - idx * 0.2,
-                "bb_upper": 102.0,
-                "bb_lower": 94.0,
+                "open": 100.0 + idx * 0.05,
+                "high": 100.8 + idx * 0.05,
+                "low": 99.4 + idx * 0.05,
+                "close": 100.2 + idx * 0.05,
                 "volume": 100.0,
                 "adx": 20 + idx * 0.2,
-                "adx_pos": 18.0,
-                "adx_neg": 24.0,
-                "rsi": 42.0,
-                "macd_hist": -0.2 - idx * 0.01,
-                "ema_21": 96.0,
-                "ema_50": 97.0,
+                "adx_pos": 22.0,
+                "adx_neg": 18.0,
+                "rsi": 55.0,
+                "macd_hist": 0.1 + idx * 0.01,
             }
         )
     return rows
 
 
-def test_breakout_short_no_longer_requires_bearish_di_stack() -> None:
+def test_breakout_long_uses_structure_high_not_bollinger_band() -> None:
     rows = _base_rows()
-    rows[-2].update({"close": 94.2, "bb_lower": 94.0, "adx": 28.0, "macd_hist": -0.8})
+    rows[-2].update({"close": 101.4, "high": 101.8, "low": 100.9, "adx": 27.8, "macd_hist": 0.55})
     rows[-1].update(
         {
-            "open": 94.3,
-            "high": 94.4,
-            "low": 93.4,
-            "close": 93.7,
-            "bb_lower": 94.0,
-            "volume": 180.0,
-            "adx": 29.0,
-            "adx_pos": 22.0,
-            "adx_neg": 20.0,
-            "rsi": 39.0,
-            "macd_hist": -1.0,
-            "ema_21": 93.9,
-            "ema_50": 93.7,
+            "open": 101.5,
+            "high": 103.3,
+            "low": 101.2,
+            "close": 103.0,
+            "volume": 220.0,
+            "adx": 28.5,
+            "adx_pos": 28.0,
+            "adx_neg": 16.0,
+            "rsi": 61.0,
+            "macd_hist": 0.8,
         }
     )
     strategy = BreakoutStrategy(skip_on_chop=False)
+    df = pd.DataFrame(rows)
 
-    signals = strategy.evaluate_single("BTCUSDT", "15m", _result(pd.DataFrame(rows)))
-
-    assert len(signals) == 1
-    assert signals[0].signal_type == "SHORT"
-    assert signals[0].indicators["adx_neg_dominant"] is False
-
-
-def test_breakout_short_emits_when_bearish_breakout_is_confirmed() -> None:
-    rows = _base_rows()
-    rows[-2].update({"close": 94.2, "bb_lower": 94.0, "adx": 28.0, "macd_hist": -0.8})
-    rows[-1].update(
-        {
-            "open": 94.0,
-            "high": 94.1,
-            "low": 92.8,
-            "close": 93.0,
-            "bb_lower": 94.0,
-            "volume": 240.0,
-            "adx": 29.0,
-            "adx_pos": 18.0,
-            "adx_neg": 27.0,
-            "rsi": 39.0,
-            "macd_hist": -1.1,
-            "ema_21": 93.5,
-            "ema_50": 95.0,
-        }
-    )
-    strategy = BreakoutStrategy(skip_on_chop=False)
-
-    signals = strategy.evaluate_single("BTCUSDT", "15m", _result(pd.DataFrame(rows)))
+    signals = strategy.evaluate_single("BTCUSDT", "15m", _result(df))
 
     assert len(signals) == 1
-    assert signals[0].signal_type == "SHORT"
+    assert signals[0].signal_type == "LONG"
+    assert signals[0].indicators["breakout_price"] == round(float(df.iloc[-21:-1]["high"].max()), 4)
     assert signals[0].indicators["breakout_body_ok"] is True
 
 
-def test_breakout_short_allows_early_trend_breaks_without_ema_stack() -> None:
+def test_breakout_short_uses_structure_low_and_keeps_short_symmetry() -> None:
     rows = _base_rows()
-    rows[-2].update({"close": 94.2, "bb_lower": 94.0, "adx": 28.0, "macd_hist": -0.8, "low": 93.9})
+    for idx, row in enumerate(rows):
+        row.update(
+            {
+                "open": 105.0 - idx * 0.05,
+                "high": 105.6 - idx * 0.05,
+                "low": 104.2 - idx * 0.05,
+                "close": 104.8 - idx * 0.05,
+                "adx_pos": 18.0,
+                "adx_neg": 24.0,
+                "rsi": 42.0,
+                "macd_hist": -0.1 - idx * 0.01,
+            }
+        )
+    rows[-2].update({"close": 103.6, "high": 104.0, "low": 103.1, "adx": 27.8, "macd_hist": -0.55})
     rows[-1].update(
         {
-            "open": 94.0,
-            "high": 94.1,
-            "low": 92.8,
-            "close": 93.0,
-            "bb_lower": 94.0,
-            "volume": 160.0,
-            "adx": 29.0,
-            "adx_pos": 18.0,
-            "adx_neg": 27.0,
-            "rsi": 39.0,
-            "macd_hist": -1.1,
-            "ema_21": 92.7,
-            "ema_50": 92.5,
+            "open": 103.5,
+            "high": 103.7,
+            "low": 101.4,
+            "close": 101.8,
+            "volume": 230.0,
+            "adx": 28.5,
+            "adx_pos": 22.0,
+            "adx_neg": 20.0,
+            "rsi": 37.0,
+            "macd_hist": -0.8,
+        }
+    )
+    strategy = BreakoutStrategy(skip_on_chop=False)
+    df = pd.DataFrame(rows)
+
+    signals = strategy.evaluate_single("BTCUSDT", "15m", _result(df))
+
+    assert len(signals) == 1
+    assert signals[0].signal_type == "SHORT"
+    assert signals[0].indicators["breakout_price"] == round(float(df.iloc[-21:-1]["low"].min()), 4)
+    assert signals[0].indicators["adx_neg_dominant"] is False
+
+
+def test_breakout_rejects_when_structure_level_is_not_broken() -> None:
+    rows = _base_rows()
+    rows[-2].update({"close": 101.4, "high": 102.4, "low": 100.9, "adx": 27.8, "macd_hist": 0.55})
+    rows[-1].update(
+        {
+            "open": 101.5,
+            "high": 102.2,
+            "low": 101.2,
+            "close": 102.0,
+            "volume": 240.0,
+            "adx": 28.5,
+            "adx_pos": 28.0,
+            "adx_neg": 16.0,
+            "rsi": 61.0,
+            "macd_hist": 0.8,
         }
     )
     strategy = BreakoutStrategy(skip_on_chop=False)
 
     signals = strategy.evaluate_single("BTCUSDT", "15m", _result(pd.DataFrame(rows)))
 
-    assert len(signals) == 1
-    assert signals[0].signal_type == "SHORT"
-
-
-def test_breakout_short_allows_oversold_flushes_when_core_breakout_confirms() -> None:
-    rows = _base_rows()
-    rows[-2].update({"close": 94.2, "bb_lower": 94.0, "adx": 28.0, "macd_hist": -0.8, "low": 93.9})
-    rows[-1].update(
-        {
-            "open": 94.0,
-            "high": 94.1,
-            "low": 92.8,
-            "close": 93.0,
-            "bb_lower": 94.0,
-            "volume": 260.0,
-            "adx": 29.0,
-            "adx_pos": 18.0,
-            "adx_neg": 27.0,
-            "rsi": 28.0,
-            "macd_hist": -1.1,
-            "ema_21": 93.5,
-            "ema_50": 95.0,
-        }
-    )
-    strategy = BreakoutStrategy(skip_on_chop=False)
-
-    signals = strategy.evaluate_single("BTCUSDT", "15m", _result(pd.DataFrame(rows)))
-
-    assert len(signals) == 1
-    assert signals[0].signal_type == "SHORT"
-    assert signals[0].indicators["rsi_above_quality_floor"] is False
+    assert signals == []

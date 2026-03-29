@@ -127,6 +127,7 @@ class SignalAggregator:
                     "metrics": sig.indicators.get("regime_metrics"),
                     "reasons": sig.indicators.get("regime_reasons"),
                 },
+                signal_strength=sig.strength,
             )
             if veto.passed:
                 passed.append(sig)

@@ -115,7 +115,8 @@ def analyze_multi_timeframe(
     confidence = min(conf_4h, conf_1h) if dir_4h and dir_1h else (conf_4h or conf_1h)
 
     if dir_4h is None or dir_1h is None:
-        confidence *= 0.5
+        # V10: LEAN + NEUTRAL 放寬（0.5→0.7），不再過度懲罰單邊有方向的情況
+        confidence *= 0.7
 
     return MTFAnalysis(
         alignment=(

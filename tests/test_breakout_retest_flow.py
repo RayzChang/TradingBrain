@@ -92,14 +92,14 @@ async def _queue_breakout_pending_entry() -> None:
         signal_type="LONG",
         strength=0.72,
         strategy_name="breakout",
-        indicators={},
+        indicators={"breakout_price": 100.9},
         reason="test breakout",
     )
 
     await brain._queue_pending_entries([signal], _make_primary_result(), "{}")
 
     pending = brain._pending_entries["BTCUSDT"][0]
-    assert pending.breakout_price == 100.5
+    assert pending.breakout_price == 100.9
     assert pending.expire_bars == brain.BREAKOUT_RETEST_EXPIRE_BARS
     assert pending.signal_strength == signal.strength
     assert pending.retest_zone_low < pending.breakout_price < pending.retest_zone_high
@@ -121,14 +121,14 @@ async def _queue_breakout_pending_entry_short() -> None:
         signal_type="SHORT",
         strength=0.68,
         strategy_name="breakout",
-        indicators={},
+        indicators={"breakout_price": 99.1},
         reason="test breakout short",
     )
 
     await brain._queue_pending_entries([signal], _make_short_primary_result(), "{}")
 
     pending = brain._pending_entries["BTCUSDT"][0]
-    assert pending.breakout_price == 99.5
+    assert pending.breakout_price == 99.1
     assert pending.expire_bars == brain.BREAKOUT_RETEST_EXPIRE_BARS
     assert pending.signal_strength == signal.strength
     assert pending.retest_zone_low < pending.breakout_price < pending.retest_zone_high

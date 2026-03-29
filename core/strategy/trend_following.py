@@ -1,15 +1,16 @@
-"""Trend following strategy with stricter long-side confirmation."""
+"""Trend following strategy built around pullback continuation candles."""
 
 import pandas as pd
 from loguru import logger
 
+from core.analysis.candle_context import analyze_candle_context
 from core.analysis.candlestick import PatternDirection
 from core.analysis.engine import AnalysisResult
 from core.strategy.base import BaseStrategy, MarketRegime, TradeSignal
 
 
 class TrendFollowingStrategy(BaseStrategy):
-    """Trade confirmed EMA crossovers in trending conditions."""
+    """Trade pullback continuations instead of chasing raw EMA crosses."""
 
     allowed_regimes = [MarketRegime.TRENDING, MarketRegime.RANGING]
 
@@ -28,6 +29,9 @@ class TrendFollowingStrategy(BaseStrategy):
         short_rsi_quality_floor: float = 37.0,
         short_rsi_bb_position_floor: float = 0.25,
         max_cross_age_bars: int = 30,
+        pullback_lookback_bars: int = 6,
+        ema_pullback_tolerance: float = 0.004,
+        ema50_fail_tolerance: float = 0.008,
     ) -> None:
         self.adx_min = adx_min
         self.skip_on_chop = skip_on_chop
@@ -43,6 +47,9 @@ class TrendFollowingStrategy(BaseStrategy):
         self.short_rsi_quality_floor = short_rsi_quality_floor
         self.short_rsi_bb_position_floor = short_rsi_bb_position_floor
         self.max_cross_age_bars = max_cross_age_bars
+        self.pullback_lookback_bars = pullback_lookback_bars
+        self.ema_pullback_tolerance = ema_pullback_tolerance
+        self.ema50_fail_tolerance = ema50_fail_tolerance
 
     @property
     def name(self) -> str:
@@ -86,6 +93,24 @@ class TrendFollowingStrategy(BaseStrategy):
     def _log_entry_quality_filter(self, symbol: str, reason: str) -> None:
         logger.info(f"ENTRY_QUALITY_FILTER: {symbol} {reason}")
 
+    @staticmethod
+    def _candle_metrics(row: pd.Series) -> tuple[float, float, float, float, float]:
+        open_price = float(row.get("open"))
+        close_price = float(row.get("close"))
+        high_price = float(row.get("high"))
+        low_price = float(row.get("low"))
+        candle_range = max(high_price - low_price, 1e-9)
+        body = abs(close_price - open_price)
+        lower_wick = min(open_price, close_price) - low_price
+        upper_wick = high_price - max(open_price, close_price)
+        return open_price, close_price, candle_range, body, max(lower_wick, 0.0), max(upper_wick, 0.0)
+
+    def _recent_pullback_window(self, df: pd.DataFrame) -> pd.DataFrame:
+        if len(df) <= 1:
+            return df.iloc[0:0]
+        start = max(0, len(df) - 1 - self.pullback_lookback_bars)
+        return df.iloc[start:-1]
+
     def evaluate_single(
         self,
         symbol: str,
@@ -94,7 +119,7 @@ class TrendFollowingStrategy(BaseStrategy):
     ) -> list[TradeSignal]:
         signals: list[TradeSignal] = []
 
-        if result.df_enriched is None or len(result.df_enriched) < 3:
+        if result.df_enriched is None or len(result.df_enriched) < 4:
             return signals
 
         if self.skip_on_chop and result.chop and result.chop.is_chop:
@@ -121,7 +146,12 @@ class TrendFollowingStrategy(BaseStrategy):
         adx_pos_curr = curr.get("adx_pos")
         adx_neg_curr = curr.get("adx_neg")
         close_curr = curr.get("close")
+        open_curr = curr.get("open")
+        high_curr = curr.get("high")
+        low_curr = curr.get("low")
         prev_high = prev.get("high")
+        prev_low = prev.get("low")
+        prev_close = prev.get("close")
         rsi_curr = curr.get("rsi")
         macd_hist_curr = curr.get("macd_hist")
         macd_hist_prev = prev.get("macd_hist")
@@ -129,26 +159,43 @@ class TrendFollowingStrategy(BaseStrategy):
 
         if any(
             value is None or (isinstance(value, float) and pd.isna(value))
-            for value in (ema9_prev, ema21_prev, ema9_curr, ema21_curr)
+            for value in (
+                ema9_prev,
+                ema21_prev,
+                ema9_curr,
+                ema21_curr,
+                open_curr,
+                high_curr,
+                low_curr,
+                prev_high,
+                prev_low,
+                prev_close,
+            )
         ):
             return signals
 
         candle_bonus = self._candle_pattern_bonus(result)
+        candle_confirm_bullish = self._has_confident_pattern(result, "bullish")
+        candle_confirm_bearish = self._has_confident_pattern(result, "bearish")
+        candle_ctx = analyze_candle_context(df)
         fib_info = self._fibonacci_bonus(result, float(curr.get("close", 0)))
         divergence_bonus = self._divergence_bonus(result)
-        bullish_confluence = int(candle_bonus.get("bullish", 0) > 0) + int(
-            fib_info.get("near_support", False)
-        ) + int(divergence_bonus.get("bullish", False))
-        bearish_confluence = int(candle_bonus.get("bearish", 0) > 0) + int(
-            fib_info.get("near_resistance", False)
-        ) + int(divergence_bonus.get("bearish", False))
         bullish_cross_age = self._get_cross_age_bars(df, bullish=True)
         bearish_cross_age = self._get_cross_age_bars(df, bullish=False)
+        pullback_window = self._recent_pullback_window(df)
+        if pullback_window.empty:
+            return signals
+        recent_pullback_low = float(pullback_window["low"].min())
+        recent_pullback_high = float(pullback_window["high"].max())
+        open_curr_f, close_curr_f, candle_range, body, lower_wick, upper_wick = self._candle_metrics(curr)
 
-        if ema9_curr > ema21_curr and bullish_cross_age is not None and bullish_cross_age <= 10:
+        if ema9_curr > ema21_curr:
             bullish_stack_ok = True
             bullish_di_ok = True
             bullish_momentum_ok = True
+            bullish_pullback_ok = True
+            bullish_rejection_ok = True
+            bullish_trigger_ok = True
 
             if self.require_bullish_trend_stack:
                 bullish_stack_values = (
@@ -180,16 +227,42 @@ class TrendFollowingStrategy(BaseStrategy):
                         self.long_rsi_floor <= rsi_curr <= self.long_rsi_ceiling
                         and macd_hist_curr > 0
                     )
+                    bullish_pullback_ok = bool(
+                        recent_pullback_low <= ema21_curr * (1 + self.ema_pullback_tolerance)
+                        and recent_pullback_low >= ema50_curr * (1 - self.ema50_fail_tolerance)
+                    )
+                    _candle_shape_ok = bool(
+                        close_curr_f > open_curr_f
+                        and close_curr_f >= (low_curr + candle_range * 0.6)
+                    )
+                    _candle_confirm = bool(
+                        candle_confirm_bullish
+                        or candle_ctx.momentum_score > 0.2
+                        or candle_ctx.rejection_count >= 2
+                    )
+                    bullish_rejection_ok = _candle_shape_ok and _candle_confirm
+                    bullish_trigger_ok = bool(
+                        close_curr_f > ema9_curr
+                        and close_curr_f > prev_close
+                        and (
+                            close_curr_f > prev_high
+                            or lower_wick >= body
+                        )
+                    )
 
             if (
                 not bullish_stack_ok
                 or not bullish_di_ok
                 or not bullish_momentum_ok
+                or not bullish_pullback_ok
+                or not bullish_rejection_ok
+                or not bullish_trigger_ok
             ):
                 logger.debug(
                     f"{self.name} LONG filtered: {symbol} {timeframe} "
                     f"stack={bullish_stack_ok} di={bullish_di_ok} "
-                    f"momentum={bullish_momentum_ok} confluence={bullish_confluence}"
+                    f"momentum={bullish_momentum_ok} pullback={bullish_pullback_ok} "
+                    f"rejection={bullish_rejection_ok} trigger={bullish_trigger_ok}"
                 )
                 return signals
 
@@ -213,18 +286,11 @@ class TrendFollowingStrategy(BaseStrategy):
                     ),
                 )
                 return signals
-            if bullish_cross_age is not None and bullish_cross_age > self.max_cross_age_bars:
-                self._log_entry_quality_filter(
-                    symbol,
-                    f"LONG_cross_age_{bullish_cross_age}_bars_above_{self.max_cross_age_bars}",
-                )
-                return signals
-
             strength = min(0.5 + (adx - self.adx_min) / 50.0, 1.0)
             strength = max(0.0, strength)
 
             if candle_bonus.get("bullish", 0) > 0:
-                strength = min(strength + 0.1, 1.0)
+                strength = min(strength + 0.15, 1.0)
             if fib_info.get("near_support", False):
                 strength = min(strength + 0.1, 1.0)
             if divergence_bonus.get("bullish", False):
@@ -232,13 +298,16 @@ class TrendFollowingStrategy(BaseStrategy):
             if candle_bonus.get("bearish", 0) > 0:
                 strength = max(strength - 0.15, 0.0)
 
+            # 量能軟檢查：低量降信心
+            if "volume" in df.columns:
+                curr_vol = pd.to_numeric(curr.get("volume", 0), errors="coerce")
+                avg_vol = pd.to_numeric(df["volume"].iloc[-20:], errors="coerce").mean()
+                if avg_vol > 0 and curr_vol < avg_vol * 0.8:
+                    strength = strength * 0.7
+
             if strength >= 0.3:
-                breakout_momentum_bonus = (
-                    prev_high is not None
-                    and not (isinstance(prev_high, float) and pd.isna(prev_high))
-                    and close_curr > prev_high
-                )
-                if breakout_momentum_bonus:
+                continuation_break = bool(close_curr > prev_high)
+                if continuation_break:
                     strength = min(strength + 0.1, 1.0)
                 signals.append(
                     TradeSignal(
@@ -259,7 +328,13 @@ class TrendFollowingStrategy(BaseStrategy):
                             "macd_hist": round(float(macd_hist_curr), 4) if macd_hist_curr is not None else None,
                             "bb_position": round(float(bb_position), 4) if bb_position is not None else None,
                             "cross_age_bars": bullish_cross_age,
-                            "breakout_momentum_bonus": breakout_momentum_bonus,
+                            "recent_pullback_low": round(recent_pullback_low, 4),
+                            "pullback_to_ema21": bullish_pullback_ok,
+                            "pullback_held_above_ema50": bool(
+                                recent_pullback_low >= float(ema50_curr) * (1 - self.ema50_fail_tolerance)
+                            ),
+                            "rejection_candle": bullish_rejection_ok,
+                            "continuation_break_confirmed": continuation_break,
                             "entry_quality_filter_triggered": False,
                             "bullish_stack_ok": bullish_stack_ok,
                             "bullish_momentum_ok": bullish_momentum_ok,
@@ -268,14 +343,14 @@ class TrendFollowingStrategy(BaseStrategy):
                             "divergence_bullish": divergence_bonus.get("bullish", False),
                         },
                         reason=(
-                            "EMA9 crossed above EMA21 with bullish trend stack"
+                            "Bullish pullback continuation after support rejection"
                             + self._build_reason_suffix(candle_bonus, fib_info, divergence_bonus, "LONG")
                         ),
                     )
                 )
                 logger.debug(f"{self.name} LONG signal: {symbol} {timeframe} ADX={adx:.1f} strength={strength:.2f}")
 
-        if ema9_curr < ema21_curr and bearish_cross_age is not None and bearish_cross_age <= 10:
+        if ema9_curr < ema21_curr:
             bearish_stack_values = (
                 ema50_prev,
                 ema50_curr,
@@ -303,16 +378,42 @@ class TrendFollowingStrategy(BaseStrategy):
                 self.short_rsi_floor <= rsi_curr <= self.short_rsi_ceiling
                 and macd_hist_curr < 0
             )
+            bearish_pullback_ok = bool(
+                recent_pullback_high >= ema21_curr * (1 - self.ema_pullback_tolerance)
+                and recent_pullback_high <= ema50_curr * (1 + self.ema50_fail_tolerance)
+            )
+            _candle_shape_ok_s = bool(
+                close_curr_f < open_curr_f
+                and close_curr_f <= (high_curr - candle_range * 0.6)
+            )
+            _candle_confirm_s = bool(
+                candle_confirm_bearish
+                or candle_ctx.momentum_score < -0.2
+                or candle_ctx.rejection_count >= 2
+            )
+            bearish_rejection_ok = _candle_shape_ok_s and _candle_confirm_s
+            bearish_trigger_ok = bool(
+                close_curr_f < ema9_curr
+                and close_curr_f < prev_close
+                and (
+                    close_curr_f < prev_low
+                    or upper_wick >= body
+                )
+            )
 
             if (
                 not bearish_stack_ok
                 or not bearish_di_ok
                 or not bearish_momentum_ok
+                or not bearish_pullback_ok
+                or not bearish_rejection_ok
+                or not bearish_trigger_ok
             ):
                 logger.debug(
                     f"{self.name} SHORT filtered: {symbol} {timeframe} "
                     f"stack={bearish_stack_ok} di={bearish_di_ok} "
-                    f"momentum={bearish_momentum_ok} confluence={bearish_confluence}"
+                    f"momentum={bearish_momentum_ok} pullback={bearish_pullback_ok} "
+                    f"rejection={bearish_rejection_ok} trigger={bearish_trigger_ok}"
                 )
                 return signals
 
@@ -336,18 +437,11 @@ class TrendFollowingStrategy(BaseStrategy):
                     ),
                 )
                 return signals
-            if bearish_cross_age is not None and bearish_cross_age > self.max_cross_age_bars:
-                self._log_entry_quality_filter(
-                    symbol,
-                    f"SHORT_cross_age_{bearish_cross_age}_bars_above_{self.max_cross_age_bars}",
-                )
-                return signals
-
             strength = min(0.5 + (adx - self.adx_min) / 50.0, 1.0)
             strength = max(0.0, strength)
 
             if candle_bonus.get("bearish", 0) > 0:
-                strength = min(strength + 0.1, 1.0)
+                strength = min(strength + 0.15, 1.0)
             if fib_info.get("near_resistance", False):
                 strength = min(strength + 0.1, 1.0)
             if divergence_bonus.get("bearish", False):
@@ -355,14 +449,16 @@ class TrendFollowingStrategy(BaseStrategy):
             if candle_bonus.get("bullish", 0) > 0:
                 strength = max(strength - 0.15, 0.0)
 
+            # 量能軟檢查：低量降信心
+            if "volume" in df.columns:
+                curr_vol_s = pd.to_numeric(curr.get("volume", 0), errors="coerce")
+                avg_vol_s = pd.to_numeric(df["volume"].iloc[-20:], errors="coerce").mean()
+                if avg_vol_s > 0 and curr_vol_s < avg_vol_s * 0.8:
+                    strength = strength * 0.7
+
             if strength >= 0.3:
-                prev_low = prev.get("low")
-                breakdown_momentum_bonus = (
-                    prev_low is not None
-                    and not (isinstance(prev_low, float) and pd.isna(prev_low))
-                    and close_curr < prev_low
-                )
-                if breakdown_momentum_bonus:
+                continuation_break = bool(close_curr < prev_low)
+                if continuation_break:
                     strength = min(strength + 0.1, 1.0)
                 signals.append(
                     TradeSignal(
@@ -383,7 +479,13 @@ class TrendFollowingStrategy(BaseStrategy):
                             "macd_hist": round(float(macd_hist_curr), 4) if macd_hist_curr is not None else None,
                             "bb_position": round(float(bb_position), 4) if bb_position is not None else None,
                             "cross_age_bars": bearish_cross_age,
-                            "breakdown_momentum_bonus": breakdown_momentum_bonus,
+                            "recent_pullback_high": round(recent_pullback_high, 4),
+                            "pullback_to_ema21": bearish_pullback_ok,
+                            "pullback_held_below_ema50": bool(
+                                recent_pullback_high <= float(ema50_curr) * (1 + self.ema50_fail_tolerance)
+                            ),
+                            "rejection_candle": bearish_rejection_ok,
+                            "continuation_break_confirmed": continuation_break,
                             "entry_quality_filter_triggered": False,
                             "bearish_stack_ok": bearish_stack_ok,
                             "bearish_momentum_ok": bearish_momentum_ok,
@@ -392,7 +494,7 @@ class TrendFollowingStrategy(BaseStrategy):
                             "divergence_bearish": divergence_bonus.get("bearish", False),
                         },
                         reason=(
-                            "EMA9 crossed below EMA21 with bearish trend stack"
+                            "Bearish pullback continuation after resistance rejection"
                             + self._build_reason_suffix(candle_bonus, fib_info, divergence_bonus, "SHORT")
                         ),
                     )
@@ -446,6 +548,15 @@ class TrendFollowingStrategy(BaseStrategy):
             for divergence in result.divergences
         )
         return {"bullish": bullish, "bearish": bearish}
+
+    @staticmethod
+    def _has_confident_pattern(result: AnalysisResult, direction: str, min_confidence: float = 0.5) -> bool:
+        """Check if any candle pattern matches the direction with sufficient confidence."""
+        target = PatternDirection.BULLISH if direction == "bullish" else PatternDirection.BEARISH
+        return any(
+            p.direction == target and p.confidence >= min_confidence
+            for p in result.candle_patterns
+        )
 
     @staticmethod
     def _build_reason_suffix(candle: dict, fib: dict, div: dict, direction: str) -> str:

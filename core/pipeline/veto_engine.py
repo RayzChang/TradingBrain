@@ -92,6 +92,7 @@ class VetoEngine:
         *,
         market_regime: str | None = None,
         regime_details: dict | None = None,
+        signal_strength: float | None = None,
     ) -> VetoResult:
         """
         評估交易信號是否應被否決。
@@ -101,6 +102,7 @@ class VetoEngine:
             direction: 交易方向 ("LONG" or "SHORT")
             market_regime: 當前市場狀態（可選）
             regime_details: regime 判定細節（可選）
+            signal_strength: 信號強度（可選），< 0.5 直接否決
 
         Returns:
             VetoResult with passed/vetoed status and reasons
@@ -108,6 +110,14 @@ class VetoEngine:
         thresholds = self._load_thresholds()
         reasons = []
         details = {}
+
+        # === 0a. C 級信號否決 ===
+        if signal_strength is not None:
+            details["signal_strength"] = round(signal_strength, 4)
+            if signal_strength < 0.5:
+                reasons.append(
+                    f"信號強度 {signal_strength:.2f} < 0.5 (C級信號，否決開倉)"
+                )
 
         # 大腦覆寫 或 Testnet 設定：放寬否決時僅保留爆倉/絞肉機
         brain = brain_get_overrides()

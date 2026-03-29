@@ -64,6 +64,7 @@ class RiskManager:
         atr: float,
         open_trades_count: int,
         coin_max_leverage: int | None = None,
+        entry_candle: dict | None = None,
     ) -> RiskCheckResult:
         """Run all pre-trade risk checks and return the executable risk profile."""
         daily_pnl = self.db.get_daily_pnl()
@@ -81,6 +82,17 @@ class RiskManager:
                 passed=False,
                 reason=cool.reason,
                 details={"stage": "cooldown"},
+            )
+
+        # 同幣同方向冷卻
+        sym_cool = self.cooldown.per_symbol_direction_cooldown(
+            signal.symbol, signal.signal_type,
+        )
+        if not sym_cool.can_open:
+            return RiskCheckResult(
+                passed=False,
+                reason=sym_cool.reason,
+                details={"stage": "symbol_direction_cooldown"},
             )
 
         max_open = self.position_sizer.max_open_positions(current_balance)
@@ -104,6 +116,7 @@ class RiskManager:
             strategy_name=signal.strategy_name,
             structure_df=signal.indicators.get("_structure_df"),
             leverage=effective_leverage,
+            entry_candle=entry_candle,
         )
         if sl_result.rejected:
             return RiskCheckResult(

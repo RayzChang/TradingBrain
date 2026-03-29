@@ -1,46 +1,34 @@
 ---
-description: TradingBrain 加密貨幣自動交易系統的全局規則
+description: TradingBrain 專案維護規則與交付原則
 globs:
 alwaysApply: true
 ---
 
 # TradingBrain 專案規則
 
-## 語言
-- 永遠使用繁體中文回應用戶
-- 程式碼變數/函數用英文，註解可中英混合
+## 專案定位
 
-## 工作流程
-- 開始前先讀 `PROJECT_STATUS.md` 了解當前進度
-- 結束前更新 `PROJECT_STATUS.md` 並 commit
-- 每個功能模組完成後獨立 commit，格式: `[Phase{N}] type: description`
+- Binance Futures 自動交易系統
+- Python 後端 + FastAPI + React/TypeScript 前端
+- Telegram 通知
+- SQLite 研究與交易資料庫
 
-## 技術棧
-- Python 3.14+ / FastAPI / APScheduler / ta (替代 pandas-ta) / ccxt / python-binance
-- React 18 + TypeScript + TailwindCSS + Recharts + lightweight-charts
-- SQLite-WAL (關聯數據) + Parquet (K線時序) + dict 記憶體快取
-- LINE Messaging API (通知)
+## 維護原則
 
-## 核心架構原則
-- 技術指標是唯一開單觸發源，資訊管線只有否決權
-- 所有幣安 API 請求必須經過 core/rate_limiter.py (Singleton)
-- 倉位 < min_notional_value 時放棄交易
-- 絞肉機行情偵測：高低差大但收盤無變化 = 暫停
-- 風控參數存 DB，可透過 Web UI 即時調整
+- 優先保持交易邏輯、前端顯示、通知文案三者一致
+- 任何改動都應同步考慮多空對稱
+- 不要讓文件落後於實際執行版本
+- 風控與交易相關改動應優先補測試
 
-## 安全禁令
-- 不得在程式碼中硬編碼任何 API 密鑰
-- 不得將 .env 檔案 commit 到版控
-- 不得在未經確認下執行實盤交易程式碼
-- 不得 force push 到 main 分支
+## 交易哲學
 
-## Python 規範
-- 遵循 PEP 8，使用 type hints
-- 所有模組必須有 module-level docstring
-- 使用 logging 模組，不要 print
-- async 函數用於 I/O 密集操作
+- 結構優先，K 線確認，指標輔助
+- 槓桿是結果，不是固定預設
+- 止損要分為 soft stop 與 hard stop
+- 不以 ATR 模板取代結構失效邏輯
 
-## React 規範
-- 函數組件 + hooks
-- TailwindCSS utility classes
-- WebSocket hooks 用於即時數據
+## 禁止事項
+
+- 不要提交真實 API key 或 `.env`
+- 不要 force push 到 `main`
+- 不要把測試通知偽裝成正式開倉通知

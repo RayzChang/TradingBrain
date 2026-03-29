@@ -20,6 +20,7 @@ class _DummyChop:
 @dataclass
 class _DummyPattern:
     direction: PatternDirection
+    confidence: float = 0.8
 
 
 def _make_result(df: pd.DataFrame, candle_patterns: list | None = None) -> AnalysisResult:
@@ -35,31 +36,13 @@ def _make_result(df: pd.DataFrame, candle_patterns: list | None = None) -> Analy
     )
 
 
-def test_trend_following_long_requires_bullish_stack() -> None:
+def test_trend_following_long_requires_pullback_rejection_continuation() -> None:
     df = pd.DataFrame(
         [
-            {"close": 99, "ema_9": 98, "ema_21": 100, "ema_50": 105, "adx": 27, "adx_pos": 17, "adx_neg": 23},
-            {"close": 100, "ema_9": 99, "ema_21": 100, "ema_50": 104, "adx": 28, "adx_pos": 18, "adx_neg": 22},
-            {"close": 102, "ema_9": 101, "ema_21": 100, "ema_50": 103, "adx": 29, "adx_pos": 19, "adx_neg": 24},
-        ]
-    )
-    strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)
-
-    signals = strategy.evaluate_single(
-        "BTCUSDT",
-        "15m",
-        _make_result(df, [_DummyPattern(PatternDirection.BULLISH)]),
-    )
-
-    assert signals == []
-
-
-def test_trend_following_long_survives_when_stack_is_confirmed() -> None:
-    df = pd.DataFrame(
-        [
-            {"high": 99, "close": 98, "ema_9": 97, "ema_21": 99, "ema_50": 95, "adx": 27, "adx_pos": 23, "adx_neg": 19, "rsi": 55, "macd_hist": 0.2},
-            {"high": 101, "close": 100, "ema_9": 99, "ema_21": 100, "ema_50": 96, "adx": 28, "adx_pos": 24, "adx_neg": 18, "rsi": 57, "macd_hist": 0.25},
-            {"high": 105, "close": 104, "ema_9": 102, "ema_21": 101, "ema_50": 97, "adx": 30, "adx_pos": 28, "adx_neg": 16, "rsi": 60, "macd_hist": 0.35},
+            {"open": 100.0, "high": 101.0, "low": 99.2, "close": 100.2, "ema_9": 99.6, "ema_21": 99.8, "ema_50": 98.7, "adx": 24, "adx_pos": 22, "adx_neg": 16, "rsi": 53, "macd_hist": 0.12},
+            {"open": 100.4, "high": 102.6, "low": 100.1, "close": 102.2, "ema_9": 100.9, "ema_21": 100.2, "ema_50": 99.0, "adx": 26, "adx_pos": 24, "adx_neg": 15, "rsi": 56, "macd_hist": 0.18},
+            {"open": 102.0, "high": 102.4, "low": 101.0, "close": 101.4, "ema_9": 101.2, "ema_21": 100.7, "ema_50": 99.4, "adx": 27, "adx_pos": 24, "adx_neg": 14, "rsi": 55, "macd_hist": 0.17},
+            {"open": 101.3, "high": 103.5, "low": 100.8, "close": 103.0, "ema_9": 102.0, "ema_21": 101.0, "ema_50": 99.8, "adx": 30, "adx_pos": 28, "adx_neg": 13, "rsi": 59, "macd_hist": 0.24},
         ]
     )
     strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)
@@ -72,16 +55,18 @@ def test_trend_following_long_survives_when_stack_is_confirmed() -> None:
 
     assert len(signals) == 1
     assert signals[0].signal_type == "LONG"
-    assert signals[0].indicators["bullish_stack_ok"] is True
+    assert signals[0].indicators["pullback_to_ema21"] is True
+    assert signals[0].indicators["rejection_candle"] is True
+    assert signals[0].indicators["continuation_break_confirmed"] is True
 
 
-def test_trend_following_long_allows_recent_cross_not_only_current_bar() -> None:
+def test_trend_following_long_rejects_extension_without_pullback() -> None:
     df = pd.DataFrame(
         [
-            {"high": 99, "close": 98, "ema_9": 97, "ema_21": 99, "ema_50": 95, "adx": 27, "adx_pos": 23, "adx_neg": 19, "rsi": 55, "macd_hist": 0.20},
-            {"high": 100, "close": 99.5, "ema_9": 99.5, "ema_21": 99.8, "ema_50": 95.5, "adx": 28, "adx_pos": 24, "adx_neg": 18, "rsi": 56, "macd_hist": 0.24},
-            {"high": 101, "close": 100.8, "ema_9": 101.1, "ema_21": 100.0, "ema_50": 96.0, "adx": 29, "adx_pos": 26, "adx_neg": 17, "rsi": 58, "macd_hist": 0.30},
-            {"high": 101.2, "close": 100.9, "ema_9": 101.3, "ema_21": 100.2, "ema_50": 96.4, "adx": 30, "adx_pos": 27, "adx_neg": 16, "rsi": 59, "macd_hist": 0.34},
+            {"open": 101.8, "high": 102.2, "low": 101.9, "close": 102.1, "ema_9": 99.8, "ema_21": 99.7, "ema_50": 98.9, "adx": 24, "adx_pos": 22, "adx_neg": 17, "rsi": 54, "macd_hist": 0.10},
+            {"open": 101.0, "high": 103.0, "low": 102.1, "close": 102.6, "ema_9": 101.0, "ema_21": 100.2, "ema_50": 99.2, "adx": 26, "adx_pos": 24, "adx_neg": 16, "rsi": 57, "macd_hist": 0.18},
+            {"open": 102.5, "high": 104.0, "low": 102.4, "close": 103.7, "ema_9": 102.3, "ema_21": 100.9, "ema_50": 99.5, "adx": 27, "adx_pos": 25, "adx_neg": 15, "rsi": 59, "macd_hist": 0.21},
+            {"open": 103.6, "high": 105.0, "low": 103.5, "close": 104.8, "ema_9": 103.4, "ema_21": 101.2, "ema_50": 99.9, "adx": 29, "adx_pos": 27, "adx_neg": 14, "rsi": 61, "macd_hist": 0.25},
         ]
     )
     strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)
@@ -90,57 +75,18 @@ def test_trend_following_long_allows_recent_cross_not_only_current_bar() -> None
         "BTCUSDT",
         "15m",
         _make_result(df, [_DummyPattern(PatternDirection.BULLISH)]),
-    )
-
-    assert len(signals) == 1
-    assert signals[0].indicators["cross_age_bars"] == 1
-
-
-def test_trend_following_long_no_longer_requires_prev_high_break() -> None:
-    df = pd.DataFrame(
-        [
-            {"high": 99, "close": 98, "ema_9": 97, "ema_21": 99, "ema_50": 95, "adx": 27, "adx_pos": 23, "adx_neg": 19, "rsi": 55, "macd_hist": 0.2},
-            {"high": 101, "close": 100, "ema_9": 99, "ema_21": 100, "ema_50": 96, "adx": 28, "adx_pos": 24, "adx_neg": 18, "rsi": 57, "macd_hist": 0.25},
-            {"high": 105, "close": 100.8, "ema_9": 102, "ema_21": 101, "ema_50": 97, "adx": 30, "adx_pos": 28, "adx_neg": 16, "rsi": 60, "macd_hist": 0.35},
-        ]
-    )
-    strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)
-
-    signals = strategy.evaluate_single(
-        "BTCUSDT",
-        "15m",
-        _make_result(df, [_DummyPattern(PatternDirection.BULLISH)]),
-    )
-
-    assert len(signals) == 1
-    assert bool(signals[0].indicators["breakout_momentum_bonus"]) is False
-
-
-def test_trend_following_long_requires_momentum_confirmation() -> None:
-    df = pd.DataFrame(
-        [
-            {"high": 99, "close": 98, "ema_9": 97, "ema_21": 99, "ema_50": 95, "adx": 27, "adx_pos": 23, "adx_neg": 19, "rsi": 55, "macd_hist": 0.2},
-            {"high": 101, "close": 100, "ema_9": 99, "ema_21": 100, "ema_50": 96, "adx": 28, "adx_pos": 24, "adx_neg": 18, "rsi": 57, "macd_hist": 0.25},
-            {"high": 101, "close": 100.5, "ema_9": 102, "ema_21": 101, "ema_50": 97, "adx": 30, "adx_pos": 28, "adx_neg": 16, "rsi": 74, "macd_hist": 0.1},
-        ]
-    )
-    strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)
-
-    signals = strategy.evaluate_single(
-        "BTCUSDT",
-        "15m",
-        _make_result(df, [_DummyPattern(PatternDirection.BEARISH)]),
     )
 
     assert signals == []
 
 
-def test_trend_following_short_requires_bearish_stack() -> None:
+def test_trend_following_short_requires_bounce_failure_and_breakdown() -> None:
     df = pd.DataFrame(
         [
-            {"low": 100, "close": 104, "ema_9": 105, "ema_21": 103, "ema_50": 104, "adx": 27, "adx_pos": 24, "adx_neg": 18, "rsi": 45, "macd_hist": -0.10},
-            {"low": 99, "close": 102, "ema_9": 103, "ema_21": 103, "ema_50": 103, "adx": 28, "adx_pos": 23, "adx_neg": 19, "rsi": 44, "macd_hist": -0.12},
-            {"low": 97, "close": 98, "ema_9": 101, "ema_21": 102, "ema_50": 103, "adx": 30, "adx_pos": 18, "adx_neg": 25, "rsi": 44, "macd_hist": -0.15},
+            {"open": 105.0, "high": 105.4, "low": 103.8, "close": 104.2, "ema_9": 104.8, "ema_21": 105.2, "ema_50": 106.4, "adx": 24, "adx_pos": 15, "adx_neg": 22, "rsi": 48, "macd_hist": -0.12},
+            {"open": 104.0, "high": 104.2, "low": 102.0, "close": 102.5, "ema_9": 103.6, "ema_21": 104.7, "ema_50": 106.0, "adx": 26, "adx_pos": 14, "adx_neg": 24, "rsi": 43, "macd_hist": -0.18},
+            {"open": 102.6, "high": 104.5, "low": 102.4, "close": 103.8, "ema_9": 103.4, "ema_21": 104.0, "ema_50": 105.4, "adx": 27, "adx_pos": 14, "adx_neg": 24, "rsi": 46, "macd_hist": -0.16},
+            {"open": 103.9, "high": 104.8, "low": 101.4, "close": 101.8, "ema_9": 102.7, "ema_21": 103.6, "ema_50": 104.8, "adx": 30, "adx_pos": 13, "adx_neg": 28, "rsi": 41, "macd_hist": -0.24},
         ]
     )
     strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)
@@ -153,25 +99,37 @@ def test_trend_following_short_requires_bearish_stack() -> None:
 
     assert len(signals) == 1
     assert signals[0].signal_type == "SHORT"
-    assert signals[0].indicators["bearish_stack_ok"] is True
+    assert signals[0].indicators["pullback_to_ema21"] is True
+    assert signals[0].indicators["rejection_candle"] is True
+    assert signals[0].indicators["continuation_break_confirmed"] is True
 
 
-def test_trend_following_short_requires_momentum_confirmation() -> None:
+def test_trend_following_short_rejects_breakdown_without_bounce_failure() -> None:
+    """No short when candle shape lacks upper wick AND candle context momentum is neutral."""
     df = pd.DataFrame(
         [
-            {"low": 100, "close": 104, "ema_9": 105, "ema_21": 103, "ema_50": 105, "adx": 27, "adx_pos": 20, "adx_neg": 22, "rsi": 45, "macd_hist": -0.05},
-            {"low": 99, "close": 102, "ema_9": 103, "ema_21": 103, "ema_50": 104, "adx": 28, "adx_pos": 19, "adx_neg": 24, "rsi": 43, "macd_hist": -0.08},
-            {"low": 101, "close": 101.5, "ema_9": 101, "ema_21": 102, "ema_50": 103, "adx": 30, "adx_pos": 18, "adx_neg": 26, "rsi": 25, "macd_hist": -0.03},
+            # Mixed candles: alternating bullish/bearish so momentum ~0 (no candle_context confirm)
+            {"open": 104.0, "high": 105.0, "low": 103.5, "close": 104.8, "ema_9": 104.9, "ema_21": 105.3, "ema_50": 106.4, "adx": 24, "adx_pos": 15, "adx_neg": 22, "rsi": 48, "macd_hist": -0.12},
+            {"open": 104.8, "high": 105.2, "low": 103.0, "close": 103.5, "ema_9": 103.8, "ema_21": 104.8, "ema_50": 106.0, "adx": 26, "adx_pos": 14, "adx_neg": 24, "rsi": 43, "macd_hist": -0.18},
+            {"open": 103.0, "high": 105.0, "low": 102.5, "close": 104.8, "ema_9": 103.0, "ema_21": 104.0, "ema_50": 105.4, "adx": 27, "adx_pos": 14, "adx_neg": 24, "rsi": 42, "macd_hist": -0.20},
+            # Last candle: bearish but no upper wick (straight drop, no bounce failure)
+            {"open": 101.9, "high": 102.1, "low": 100.9, "close": 101.0, "ema_9": 102.2, "ema_21": 103.5, "ema_50": 104.8, "adx": 30, "adx_pos": 13, "adx_neg": 28, "rsi": 36, "macd_hist": -0.24},
         ]
     )
     strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)
 
-    signals = strategy.evaluate_single("BTCUSDT", "15m", _make_result(df))
+    signals = strategy.evaluate_single(
+        "BTCUSDT",
+        "15m",
+        _make_result(df),
+    )
 
     assert signals == []
 
 
-def test_trend_following_long_filters_bb_position(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_trend_following_long_filters_when_too_close_to_upper_band(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     messages: list[str] = []
     monkeypatch.setattr(
         "core.strategy.trend_following.logger.info",
@@ -179,45 +137,10 @@ def test_trend_following_long_filters_bb_position(monkeypatch: pytest.MonkeyPatc
     )
     df = pd.DataFrame(
         [
-            {
-                "high": 99,
-                "close": 98,
-                "ema_9": 97,
-                "ema_21": 99,
-                "ema_50": 95,
-                "adx": 27,
-                "adx_pos": 23,
-                "adx_neg": 19,
-                "rsi": 55,
-                "macd_hist": 0.2,
-                "bb_pct": 0.55,
-            },
-            {
-                "high": 101,
-                "close": 100,
-                "ema_9": 99,
-                "ema_21": 100,
-                "ema_50": 96,
-                "adx": 28,
-                "adx_pos": 24,
-                "adx_neg": 18,
-                "rsi": 57,
-                "macd_hist": 0.25,
-                "bb_pct": 0.65,
-            },
-            {
-                "high": 105,
-                "close": 104,
-                "ema_9": 102,
-                "ema_21": 101,
-                "ema_50": 97,
-                "adx": 30,
-                "adx_pos": 28,
-                "adx_neg": 16,
-                "rsi": 60,
-                "macd_hist": 0.35,
-                "bb_pct": 0.90,
-            },
+            {"open": 100.0, "high": 101.0, "low": 99.2, "close": 100.2, "ema_9": 99.6, "ema_21": 99.8, "ema_50": 98.7, "adx": 24, "adx_pos": 22, "adx_neg": 16, "rsi": 53, "macd_hist": 0.12, "bb_pct": 0.55},
+            {"open": 100.4, "high": 102.6, "low": 100.1, "close": 102.2, "ema_9": 100.9, "ema_21": 100.2, "ema_50": 99.0, "adx": 26, "adx_pos": 24, "adx_neg": 15, "rsi": 56, "macd_hist": 0.18, "bb_pct": 0.70},
+            {"open": 102.0, "high": 102.4, "low": 101.0, "close": 101.4, "ema_9": 101.2, "ema_21": 100.7, "ema_50": 99.4, "adx": 27, "adx_pos": 24, "adx_neg": 14, "rsi": 55, "macd_hist": 0.17, "bb_pct": 0.76},
+            {"open": 101.3, "high": 103.5, "low": 100.8, "close": 103.0, "ema_9": 102.0, "ema_21": 101.0, "ema_50": 99.8, "adx": 30, "adx_pos": 28, "adx_neg": 13, "rsi": 59, "macd_hist": 0.24, "bb_pct": 0.91},
         ]
     )
     strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)
@@ -229,213 +152,4 @@ def test_trend_following_long_filters_bb_position(monkeypatch: pytest.MonkeyPatc
     )
 
     assert signals == []
-    assert any("ENTRY_QUALITY_FILTER: BTCUSDT LONG_bb_position_0.90_above_0.85" in msg for msg in messages)
-
-
-def test_trend_following_long_filters_high_rsi_near_upper_band(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    messages: list[str] = []
-    monkeypatch.setattr(
-        "core.strategy.trend_following.logger.info",
-        lambda message: messages.append(message),
-    )
-    df = pd.DataFrame(
-        [
-            {
-                "high": 99,
-                "close": 98,
-                "ema_9": 97,
-                "ema_21": 99,
-                "ema_50": 95,
-                "adx": 27,
-                "adx_pos": 23,
-                "adx_neg": 19,
-                "rsi": 55,
-                "macd_hist": 0.2,
-                "bb_pct": 0.55,
-            },
-            {
-                "high": 101,
-                "close": 100,
-                "ema_9": 99,
-                "ema_21": 100,
-                "ema_50": 96,
-                "adx": 28,
-                "adx_pos": 24,
-                "adx_neg": 18,
-                "rsi": 57,
-                "macd_hist": 0.25,
-                "bb_pct": 0.60,
-            },
-            {
-                "high": 105,
-                "close": 104,
-                "ema_9": 102,
-                "ema_21": 101,
-                "ema_50": 97,
-                "adx": 30,
-                "adx_pos": 28,
-                "adx_neg": 16,
-                "rsi": 64,
-                "macd_hist": 0.35,
-                "bb_pct": 0.80,
-            },
-        ]
-    )
-    strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)
-
-    signals = strategy.evaluate_single(
-        "BTCUSDT",
-        "15m",
-        _make_result(df, [_DummyPattern(PatternDirection.BULLISH)]),
-    )
-
-    assert signals == []
-    assert any(
-        "ENTRY_QUALITY_FILTER: BTCUSDT LONG_rsi_64.00_and_bb_position_0.80_above_0.75" in msg
-        for msg in messages
-    )
-
-
-def test_trend_following_short_filters_bb_position(monkeypatch: pytest.MonkeyPatch) -> None:
-    messages: list[str] = []
-    monkeypatch.setattr(
-        "core.strategy.trend_following.logger.info",
-        lambda message: messages.append(message),
-    )
-    df = pd.DataFrame(
-        [
-            {
-                "low": 100,
-                "close": 104,
-                "ema_9": 105,
-                "ema_21": 103,
-                "ema_50": 105,
-                "adx": 27,
-                "adx_pos": 20,
-                "adx_neg": 22,
-                "rsi": 45,
-                "macd_hist": -0.05,
-                "bb_pct": 0.50,
-            },
-            {
-                "low": 99,
-                "close": 102,
-                "ema_9": 103,
-                "ema_21": 103,
-                "ema_50": 104,
-                "adx": 28,
-                "adx_pos": 19,
-                "adx_neg": 24,
-                "rsi": 43,
-                "macd_hist": -0.08,
-                "bb_pct": 0.35,
-            },
-            {
-                "low": 97,
-                "close": 98,
-                "ema_9": 101,
-                "ema_21": 102,
-                "ema_50": 103,
-                "adx": 30,
-                "adx_pos": 18,
-                "adx_neg": 26,
-                "rsi": 44,
-                "macd_hist": -0.15,
-                "bb_pct": 0.10,
-            },
-        ]
-    )
-    strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)
-
-    signals = strategy.evaluate_single(
-        "BTCUSDT",
-        "15m",
-        _make_result(df, [_DummyPattern(PatternDirection.BEARISH)]),
-    )
-
-    assert signals == []
-    assert any("ENTRY_QUALITY_FILTER: BTCUSDT SHORT_bb_position_0.10_below_0.15" in msg for msg in messages)
-
-
-def test_trend_following_short_filters_low_rsi_near_lower_band(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    messages: list[str] = []
-    monkeypatch.setattr(
-        "core.strategy.trend_following.logger.info",
-        lambda message: messages.append(message),
-    )
-    df = pd.DataFrame(
-        [
-            {
-                "low": 100,
-                "close": 104,
-                "ema_9": 105,
-                "ema_21": 103,
-                "ema_50": 105,
-                "adx": 27,
-                "adx_pos": 20,
-                "adx_neg": 22,
-                "rsi": 45,
-                "macd_hist": -0.05,
-                "bb_pct": 0.50,
-            },
-            {
-                "low": 99,
-                "close": 102,
-                "ema_9": 103,
-                "ema_21": 103,
-                "ema_50": 104,
-                "adx": 28,
-                "adx_pos": 19,
-                "adx_neg": 24,
-                "rsi": 43,
-                "macd_hist": -0.08,
-                "bb_pct": 0.35,
-            },
-            {
-                "low": 97,
-                "close": 98,
-                "ema_9": 101,
-                "ema_21": 102,
-                "ema_50": 103,
-                "adx": 30,
-                "adx_pos": 18,
-                "adx_neg": 26,
-                "rsi": 35,
-                "macd_hist": -0.15,
-                "bb_pct": 0.20,
-            },
-        ]
-    )
-    strategy = TrendFollowingStrategy(adx_min=20, skip_on_chop=False)
-
-    signals = strategy.evaluate_single(
-        "BTCUSDT",
-        "15m",
-        _make_result(df, [_DummyPattern(PatternDirection.BEARISH)]),
-    )
-
-    assert signals == []
-    assert any(
-        "ENTRY_QUALITY_FILTER: BTCUSDT SHORT_rsi_35.00_and_bb_position_0.20_below_0.25" in msg
-        for msg in messages
-    )
-
-
-def test_cross_age_filter_detects_stale_bullish_cross() -> None:
-    rows = []
-    for idx in range(35):
-        if idx == 0:
-            rows.append({"ema_9": 99.0, "ema_21": 100.0})
-        elif idx == 1:
-            rows.append({"ema_9": 101.0, "ema_21": 100.0})
-        else:
-            rows.append({"ema_9": 101.0 + idx * 0.01, "ema_21": 100.0 + idx * 0.005})
-
-    df = pd.DataFrame(rows)
-    strategy = TrendFollowingStrategy(skip_on_chop=False)
-
-    assert strategy._get_cross_age_bars(df, bullish=True) == 33
+    assert any("ENTRY_QUALITY_FILTER: BTCUSDT LONG_bb_position_0.91_above_0.85" in msg for msg in messages)

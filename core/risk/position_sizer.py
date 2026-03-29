@@ -1,4 +1,4 @@
-"""Position sizing with fixed-margin model, strategy leverage caps, and conviction tiers (V9)."""
+"""Position sizing with fixed margin, leverage caps, and daily rhythm control."""
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -11,16 +11,34 @@ if TYPE_CHECKING:
     from database.db_manager import DatabaseManager
 
 
-# Per-coin max leverage fallback table (Binance Futures approximations).
-# Used when the exchange API is unavailable (paper mode).
 COIN_MAX_LEVERAGE: dict[str, int] = {
-    "BTCUSDT": 125, "ETHUSDT": 100, "BNBUSDT": 75,
-    "SOLUSDT": 75, "XRPUSDT": 75, "ADAUSDT": 75,
-    "DOGEUSDT": 75, "AVAXUSDT": 50, "DOTUSDT": 50,
-    "LINKUSDT": 75, "MATICUSDT": 50, "NEARUSDT": 50,
-    "ARBUSDT": 50, "OPUSDT": 50, "APTUSDT": 50,
-    "SUIUSDT": 50, "ATOMUSDT": 20, "FILUSDT": 50,
-    "LTCUSDT": 75, "UNIUSDT": 50,
+    "BTCUSDT": 125,
+    "ETHUSDT": 100,
+    "BNBUSDT": 75,
+    "SOLUSDT": 75,
+    "XRPUSDT": 75,
+    "ADAUSDT": 75,
+    "DOGEUSDT": 75,
+    "AVAXUSDT": 50,
+    "DOTUSDT": 50,
+    "LINKUSDT": 75,
+    "MATICUSDT": 50,
+    "NEARUSDT": 50,
+    "ARBUSDT": 50,
+    "OPUSDT": 50,
+    "APTUSDT": 50,
+    "SUIUSDT": 50,
+    "ATOMUSDT": 20,
+    "FILUSDT": 50,
+    "LTCUSDT": 75,
+    "UNIUSDT": 50,
+}
+
+STRATEGY_LEVERAGE_CAP: dict[str, int] = {
+    "trend_following": 20,
+    "breakout": 25,
+    "mean_reversion": 15,
+    "default": 20,
 }
 
 
@@ -41,7 +59,7 @@ class PositionSizeResult:
 
 
 def get_strategy_risk_weight(strategy_name: str) -> float:
-    """Return the sizing risk weight for the strategy family."""
+    """Return the sizing weight for the strategy family."""
     family = normalize_strategy_family(strategy_name)
     if family == "breakout":
         return 1.0
@@ -50,15 +68,6 @@ def get_strategy_risk_weight(strategy_name: str) -> float:
     if family == "mean_reversion":
         return 0.7
     return 1.0
-
-
-# 策略級槓桿上限 — 不管幣種最大槓桿多高，策略本身有天花板
-STRATEGY_LEVERAGE_CAP: dict[str, int] = {
-    "trend_following": 20,
-    "breakout": 25,
-    "mean_reversion": 15,
-    "default": 20,
-}
 
 
 def get_strategy_leverage_cap(strategy_name: str) -> int:
@@ -96,10 +105,7 @@ def _daily_pnl_modifier(
     balance: float,
     params: dict,
 ) -> float:
-    """Return a 0-1 multiplier that modulates risk based on daily rhythm.
-
-    Thresholds raised significantly to match $50-200U/day profit target.
-    """
+    """Return a 0-1 multiplier that modulates risk based on daily rhythm."""
     del params
 
     modifier = 1.0
@@ -160,19 +166,17 @@ def get_coin_max_leverage(symbol: str) -> int:
 
 class PositionSizer:
     """
-    Fixed-margin position sizing with strategy leverage caps (V9).
+    Fixed-margin position sizing with strategy leverage caps.
 
-    Sizing model:
-    1. Determine margin per trade based on coin's max leverage tier.
-    2. Apply conviction and daily PnL modifiers to the margin.
-    3. Notional = margin * leverage.
-    4. Full account balance acts as collateral (CROSSED mode).
+    Model:
+    1. Determine a base margin from the coin leverage tier.
+    2. Scale that margin by conviction, strategy family, and daily P&L rhythm.
+    3. Use full account collateral in crossed mode.
     """
 
-    # Default margin range (USDT) - adjustable via risk params.
-    # V9: 提高基礎保證金，確保每筆單有足夠份量
-    DEFAULT_MARGIN_LOW = 200    # For high-leverage coins (>=75x)
-    DEFAULT_MARGIN_HIGH = 600   # For low-leverage coins (<=25x)
+    DEFAULT_MARGIN_LOW = 200
+    DEFAULT_MARGIN_HIGH = 600
+    DEFAULT_MIN_MARGIN_PER_TRADE = 200
 
     def __init__(self, db: "DatabaseManager | None" = None) -> None:
         self.db = db
@@ -184,7 +188,6 @@ class PositionSizer:
 
     @staticmethod
     def _strategy_risk_weight(strategy_name: str) -> float:
-        """Return the sizing risk weight for the strategy family."""
         return get_strategy_risk_weight(strategy_name)
 
     def _compute_margin(
@@ -193,17 +196,11 @@ class PositionSizer:
         margin_low: float,
         margin_high: float,
     ) -> float:
-        """Compute margin per trade based on coin's max leverage tier.
-
-        High-leverage coins (BTC 125x) → lower margin ($100-200).
-        Low-leverage coins (ATOM 20x) → higher margin ($400-500).
-        Linear interpolation between the two extremes.
-        """
+        """Compute margin per trade based on leverage tier."""
         if coin_max_leverage >= 75:
             return margin_low
         if coin_max_leverage <= 25:
             return margin_high
-        # Linear interpolation: 75x→margin_low, 25x→margin_high
         ratio = (coin_max_leverage - 25) / (75 - 25)
         return margin_high - ratio * (margin_high - margin_low)
 
@@ -220,13 +217,8 @@ class PositionSizer:
         daily_pnl: float = 0.0,
         coin_max_leverage: int | None = None,
     ) -> PositionSizeResult:
-        """
-        Compute the allowed position size in USDT using fixed-margin model.
-
-        V9: Position = margin * min(coin_max_leverage, strategy_cap).
-        Full account balance acts as collateral in CROSSED mode.
-        """
-        del direction, stop_loss_atr_mult
+        """Compute allowed position size in USDT using the fixed-margin model."""
+        del direction, stop_loss_atr_mult, stop_loss_price
 
         params = self._get_params()
         min_notional = float(params.get("min_notional_value", 10))
@@ -242,76 +234,69 @@ class PositionSizer:
                 reason="balance/price/atr invalid",
             )
 
-        # Determine coin's max leverage
         if coin_max_leverage is None:
             from config.settings import DEFAULT_LEVERAGE
+
             coin_max_leverage = int(params.get("max_leverage", DEFAULT_LEVERAGE))
 
-        # Compute base margin based on leverage tier
         margin_low = float(params.get("fixed_margin_low", self.DEFAULT_MARGIN_LOW))
         margin_high = float(params.get("fixed_margin_high", self.DEFAULT_MARGIN_HIGH))
         base_margin = self._compute_margin(coin_max_leverage, margin_low, margin_high)
 
-        # Apply conviction multiplier
         raw_strength = float(signal_strength) if signal_strength is not None else 0.5
         tier, conviction_mult = _conviction_tier(raw_strength)
         strategy_weight = self._strategy_risk_weight(strategy_name)
         pnl_mod = _daily_pnl_modifier(daily_pnl, balance, params)
 
-        # C 級信號直接不開倉 — 系統自己都不確定的機會不值得花錢試
         if tier == "C":
             logger.info(
-                f"Position rejected: C-tier signal (strength={raw_strength:.2f}) "
-                f"— not worth the fees"
-            )
-            return PositionSizeResult(
-                size_usdt=0.0,
-                leverage=1,
-                rejected=True,
-                effective_risk_pct=0.0,
-                strategy_risk_weight=strategy_weight,
-                strength_multiplier=conviction_mult,
-                conviction_tier=tier,
-                daily_pnl_modifier=pnl_mod,
-                reason=f"C 級信號（信心度 {raw_strength:.0%}）不開倉",
+                f"C-tier signal survived trigger gates: strength={raw_strength:.2f}; "
+                "using minimum exploratory margin"
             )
 
-        # Effective margin = base_margin * conviction * strategy_weight * pnl_mod
         effective_margin = base_margin * conviction_mult * strategy_weight * pnl_mod
 
-        # Ensure margin doesn't exceed a safe portion of balance
         max_open = self.max_open_positions(balance)
         max_margin_per_trade = (balance / max_open) * 0.90
         if effective_margin > max_margin_per_trade:
             effective_margin = max_margin_per_trade
 
-        # 策略槓桿上限：不管幣種最大多高，策略有天花板
         strategy_cap = get_strategy_leverage_cap(strategy_name)
         leverage = min(coin_max_leverage, strategy_cap)
-        # Notional = margin * leverage
         size_usdt = effective_margin * leverage
-
         effective_risk_pct = effective_margin / balance if balance > 0 else 0.0
 
-        # 最低保證金門檻：低於 100U 的單不值得開（手續費會吃掉利潤）
-        min_margin = float(params.get("min_margin_per_trade", 100))
+        min_margin = float(
+            params.get("min_margin_per_trade", self.DEFAULT_MIN_MARGIN_PER_TRADE)
+        )
         if effective_margin < min_margin:
+            if min_margin > max_margin_per_trade:
+                logger.info(
+                    f"Position rejected: min margin {min_margin:.0f}U exceeds safe cap "
+                    f"{max_margin_per_trade:.1f}U"
+                )
+                return PositionSizeResult(
+                    size_usdt=0.0,
+                    leverage=1,
+                    rejected=True,
+                    effective_risk_pct=effective_risk_pct,
+                    strategy_risk_weight=strategy_weight,
+                    strength_multiplier=conviction_mult,
+                    conviction_tier=tier,
+                    daily_pnl_modifier=pnl_mod,
+                    margin_usdt=effective_margin,
+                    reason=(
+                        f"minimum margin / 最低保證金 {min_margin:.0f}U exceeds safe cap "
+                        f"{max_margin_per_trade:.0f}U"
+                    ),
+                )
             logger.info(
-                f"Position rejected: margin {effective_margin:.1f}U < "
-                f"min {min_margin:.0f}U (tier={tier} weight={strategy_weight} pnl_mod={pnl_mod:.2f})"
+                f"Position margin floored: {effective_margin:.1f}U -> "
+                f"{min_margin:.0f}U (tier={tier} weight={strategy_weight} pnl_mod={pnl_mod:.2f})"
             )
-            return PositionSizeResult(
-                size_usdt=0.0,
-                leverage=1,
-                rejected=True,
-                effective_risk_pct=effective_risk_pct,
-                strategy_risk_weight=strategy_weight,
-                strength_multiplier=conviction_mult,
-                conviction_tier=tier,
-                daily_pnl_modifier=pnl_mod,
-                margin_usdt=effective_margin,
-                reason=f"保證金 {effective_margin:.0f}U 低於最低門檻 {min_margin:.0f}U",
-            )
+            effective_margin = min_margin
+            size_usdt = effective_margin * leverage
+            effective_risk_pct = effective_margin / balance if balance > 0 else 0.0
 
         if size_usdt < min_notional:
             logger.warning(
@@ -331,7 +316,7 @@ class PositionSizer:
             )
 
         logger.info(
-            f"Position sized (V9): tier={tier} conviction={conviction_mult:.2f} "
+            f"Position sized (V10): tier={tier} conviction={conviction_mult:.2f} "
             f"weight={strategy_weight} pnl_mod={pnl_mod:.2f} "
             f"margin={effective_margin:.1f}U leverage={leverage}x "
             f"notional={size_usdt:.0f}U"

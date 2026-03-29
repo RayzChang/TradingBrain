@@ -19,6 +19,7 @@ class _DummyChop:
 @dataclass
 class _DummyPattern:
     direction: PatternDirection
+    confidence: float = 0.8
 
 
 def _make_result(
@@ -40,29 +41,13 @@ def _make_result(
     )
 
 
-def test_mean_reversion_short_requires_bearish_reversal() -> None:
+def test_mean_reversion_short_requires_true_range_edge_reversal() -> None:
     df = pd.DataFrame(
         [
-            {"open": 100, "close": 102, "bb_upper": 103, "bb_lower": 97, "ema_21": 100},
-            {"open": 102, "close": 104, "bb_upper": 104.5, "bb_lower": 98, "ema_21": 101},
-        ]
-    )
-    strategy = MeanReversionStrategy(skip_on_chop=False)
-
-    signals = strategy.evaluate_single(
-        "BTCUSDT",
-        "15m",
-        _make_result(df, rsi=78, bb_pct=0.98),
-    )
-
-    assert signals == []
-
-
-def test_mean_reversion_short_survives_with_bearish_reversal() -> None:
-    df = pd.DataFrame(
-        [
-            {"open": 100, "close": 102, "bb_upper": 103, "bb_lower": 97, "ema_21": 101},
-            {"open": 104, "close": 100.5, "bb_upper": 101, "bb_lower": 96, "ema_21": 101},
+            {"open": 100.0, "high": 109.5, "low": 99.5, "close": 108.6, "bb_upper": 109.0, "bb_lower": 99.0},
+            {"open": 108.5, "high": 109.8, "low": 106.8, "close": 108.2, "bb_upper": 109.2, "bb_lower": 99.2},
+            {"open": 108.1, "high": 110.0, "low": 107.2, "close": 107.5, "bb_upper": 109.3, "bb_lower": 99.5},
+            {"open": 109.0, "high": 110.2, "low": 106.4, "close": 107.2, "bb_upper": 109.0, "bb_lower": 99.8},
         ]
     )
     strategy = MeanReversionStrategy(skip_on_chop=False)
@@ -72,7 +57,7 @@ def test_mean_reversion_short_survives_with_bearish_reversal() -> None:
         "15m",
         _make_result(
             df,
-            rsi=79,
+            rsi=78,
             bb_pct=0.99,
             candle_patterns=[_DummyPattern(PatternDirection.BEARISH)],
         ),
@@ -80,14 +65,17 @@ def test_mean_reversion_short_survives_with_bearish_reversal() -> None:
 
     assert len(signals) == 1
     assert signals[0].signal_type == "SHORT"
+    assert signals[0].indicators["near_range_high"] is True
     assert signals[0].indicators["bearish_reversal"] is True
 
 
-def test_mean_reversion_long_can_trigger_below_ema21_with_rsi_32() -> None:
+def test_mean_reversion_short_rejects_if_not_near_real_range_high() -> None:
     df = pd.DataFrame(
         [
-            {"open": 100, "close": 98, "bb_upper": 103, "bb_lower": 97, "ema_21": 101},
-            {"open": 97.5, "close": 98.5, "bb_upper": 102, "bb_lower": 98.2, "ema_21": 100},
+            {"open": 100.0, "high": 110.0, "low": 99.5, "close": 108.5, "bb_upper": 110.2, "bb_lower": 99.0},
+            {"open": 108.4, "high": 109.0, "low": 106.5, "close": 107.2, "bb_upper": 109.8, "bb_lower": 99.4},
+            {"open": 107.1, "high": 107.8, "low": 105.4, "close": 106.0, "bb_upper": 109.4, "bb_lower": 99.7},
+            {"open": 106.4, "high": 107.0, "low": 104.8, "close": 105.2, "bb_upper": 109.0, "bb_lower": 100.0},
         ]
     )
     strategy = MeanReversionStrategy(skip_on_chop=False)
@@ -97,12 +85,38 @@ def test_mean_reversion_long_can_trigger_below_ema21_with_rsi_32() -> None:
         "15m",
         _make_result(
             df,
-            rsi=32,
-            bb_pct=0.08,
+            rsi=76,
+            bb_pct=0.96,
+            candle_patterns=[_DummyPattern(PatternDirection.BEARISH)],
+        ),
+    )
+
+    assert signals == []
+
+
+def test_mean_reversion_long_requires_range_low_reclaim() -> None:
+    df = pd.DataFrame(
+        [
+            {"open": 110.0, "high": 110.4, "low": 100.1, "close": 101.2, "bb_upper": 110.8, "bb_lower": 100.4},
+            {"open": 101.1, "high": 103.2, "low": 100.0, "close": 102.2, "bb_upper": 110.5, "bb_lower": 100.2},
+            {"open": 102.0, "high": 102.4, "low": 99.8, "close": 100.8, "bb_upper": 110.3, "bb_lower": 100.0},
+            {"open": 100.4, "high": 103.0, "low": 99.2, "close": 101.9, "bb_upper": 110.1, "bb_lower": 100.1},
+        ]
+    )
+    strategy = MeanReversionStrategy(skip_on_chop=False)
+
+    signals = strategy.evaluate_single(
+        "BTCUSDT",
+        "15m",
+        _make_result(
+            df,
+            rsi=31,
+            bb_pct=0.07,
             candle_patterns=[_DummyPattern(PatternDirection.BULLISH)],
         ),
     )
 
     assert len(signals) == 1
     assert signals[0].signal_type == "LONG"
+    assert signals[0].indicators["near_range_low"] is True
     assert signals[0].indicators["bullish_reversal"] is True

@@ -86,3 +86,58 @@ class CooldownChecker:
             return CooldownResult(can_open=False, reason=reason)
 
         return CooldownResult(can_open=True)
+
+    def per_symbol_direction_cooldown(
+        self,
+        symbol: str,
+        direction: str,
+    ) -> CooldownResult:
+        """同幣同方向冷卻：1 筆虧→2h, 2 筆→4h, 3 筆→8h。"""
+        recent = self.db.get_recent_closed_trades(limit=20)
+        if not recent:
+            return CooldownResult(can_open=True)
+
+        losses = 0
+        last_loss_ts = 0.0
+        for t in recent:
+            if t.get("symbol") != symbol or t.get("side") != direction:
+                continue
+            pnl = t.get("pnl")
+            if pnl is None:
+                break
+            try:
+                pnl_f = float(pnl)
+            except (TypeError, ValueError):
+                break
+            if pnl_f < 0:
+                losses += 1
+                if losses == 1:
+                    closed_at = t.get("closed_at")
+                    if closed_at:
+                        try:
+                            dt = datetime.fromisoformat(closed_at.replace("Z", "+00:00"))
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            last_loss_ts = dt.timestamp()
+                        except Exception:
+                            pass
+            else:
+                break
+
+        if losses == 0:
+            return CooldownResult(can_open=True)
+
+        cooldown_hours = {1: 2, 2: 4}.get(losses, 8 if losses >= 3 else 0)
+        cooldown_sec = cooldown_hours * 3600
+
+        now = datetime.now(timezone.utc).timestamp()
+        if last_loss_ts > 0 and now - last_loss_ts <= cooldown_sec:
+            remaining = int(cooldown_sec - (now - last_loss_ts))
+            reason = (
+                f"{symbol} {direction} 連虧 {losses} 筆，"
+                f"同方向冷卻 {cooldown_hours}h (剩 {remaining}s)"
+            )
+            logger.warning(reason)
+            return CooldownResult(can_open=False, reason=reason)
+
+        return CooldownResult(can_open=True)

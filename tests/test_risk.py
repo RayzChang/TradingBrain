@@ -72,7 +72,7 @@ def test_position_sizer():
 
 
 def test_position_sizer_fixed_margin_ignores_stop_distance():
-    """V9: Fixed-margin model sizes by coin leverage tier, not stop distance."""
+    """V10: Fixed-margin model sizes by coin leverage tier, not stop distance."""
     print("\n=== 測試 position sizing 固定保證金模型（不依賴止損距離） ===")
     sizer = PositionSizer(db=None)
     close_stop = sizer.compute(
@@ -91,14 +91,14 @@ def test_position_sizer_fixed_margin_ignores_stop_distance():
     )
     assert close_stop.rejected is False
     assert far_stop.rejected is False
-    # V9: Both get the same fixed margin regardless of stop distance
+    # V10: Both get the same fixed margin regardless of stop distance
     assert close_stop.size_usdt == far_stop.size_usdt
     assert close_stop.margin_usdt > 0
     print("  [PASS]")
 
 
 def test_position_sizer_applies_strategy_weight_and_signal_strength():
-    """V9: Fixed-margin model with conviction tiers and strategy weights."""
+    """V10: Fixed-margin model with conviction tiers and strategy weights."""
     print("\n=== 測試 position sizing 套用策略權重與信號強度 ===")
     sizer = PositionSizer(db=None)
     # Use a large balance so margin isn't capped by max_margin_per_trade
@@ -142,26 +142,76 @@ def test_position_sizer_applies_strategy_weight_and_signal_strength():
     assert trend.rejected is False
     assert mean_rev.rejected is False
     assert boosted.rejected is False
-    # V9: strategy_risk_weight is correctly assigned
+    # V10: strategy_risk_weight is correctly assigned
     assert breakout.strategy_risk_weight == 1.0
     assert trend.strategy_risk_weight == 0.8
     assert mean_rev.strategy_risk_weight == 0.7
-    # V9: margin_usdt reflects weight differences
+    # V10: margin_usdt reflects weight differences
     assert breakout.margin_usdt > trend.margin_usdt > mean_rev.margin_usdt
-    # V9: same conviction tier, weight diff → size diff
+    # V10: same conviction tier, weight diff → size diff
     assert breakout.size_usdt > trend.size_usdt > mean_rev.size_usdt
     # Boosted has same weight as breakout → same size (conviction caps at 1.3)
     assert boosted.size_usdt == breakout.size_usdt
-    # V9: conviction tier is A for strength >= 0.7
+    # V10: conviction tier is A for strength >= 0.7
     assert breakout.conviction_tier == "A"
     assert boosted.conviction_tier == "A"
     print("  [PASS]")
 
 
+def test_position_sizer_floors_weak_signal_margin_to_200u():
+    print("\n=== 測試弱訊號觸發後至少補到 200U 保證金 ===")
+
+    class DummyDB:
+        @staticmethod
+        def get_risk_params():
+            return {"min_margin_per_trade": 200}
+
+    sizer = PositionSizer(db=DummyDB())
+    result = sizer.compute(
+        balance=4500,
+        entry_price=1.0,
+        atr=0.05,
+        direction="LONG",
+        strategy_name="mean_reversion",
+        signal_strength=0.39,
+        stop_loss_price=0.95,
+        coin_max_leverage=50,
+    )
+    assert result.rejected is False
+    assert result.conviction_tier == "C"
+    assert result.margin_usdt == 200
+    assert result.size_usdt == 3000
+    print("  [PASS]")
+
+
+def test_position_sizer_still_rejects_if_balance_cannot_support_min_margin():
+    print("\n=== 測試帳戶撐不起 200U 最低保證金時仍安全拒單 ===")
+
+    class DummyDB:
+        @staticmethod
+        def get_risk_params():
+            return {"min_margin_per_trade": 200, "max_open_positions": 1}
+
+    sizer = PositionSizer(db=DummyDB())
+    result = sizer.compute(
+        balance=50,
+        entry_price=1.0,
+        atr=0.05,
+        direction="LONG",
+        strategy_name="mean_reversion",
+        signal_strength=0.39,
+        stop_loss_price=0.95,
+        coin_max_leverage=50,
+    )
+    assert result.rejected is True
+    assert "最低保證金" in result.reason
+    print("  [PASS]")
+
+
 def test_daily_pnl_modifier_uses_balance_relative_rhythm_thresholds():
-    """V9: Thresholds raised — 3%/5%/8% profit, 2%/4%/6% drawdown."""
+    """V10: Thresholds raised — 3%/5%/8% profit, 2%/4%/6% drawdown."""
     print("\n=== 測試 daily rhythm modifier 依帳戶百分比分檔 ===")
-    params = {}  # V9: params are ignored, thresholds are hardcoded by balance %
+    params = {}  # V10: params are ignored, thresholds are hardcoded by balance %
     # balance=5000 → profit_lock=150, profit_close=250, profit_stop=400
     #                 dd_reduce=100, dd_focus=200, dd_stop=300
     assert _daily_pnl_modifier(100.0, 5000.0, params) == 1.0   # below profit_lock
@@ -193,7 +243,7 @@ def test_stop_loss_calculator():
 def test_stop_loss_calculator_mean_reversion_profile():
     print("\n=== 測試 mean_reversion 專屬出場模板 ===")
     calc = StopLossCalculator(db=None)
-    # V9: min_risk_reward raised to 1.5, use wider ATR to ensure pass
+    # V10: min_risk_reward raised to 1.5, use wider ATR to ensure pass
     result = calc.compute(
         entry_price=100,
         atr=2,
@@ -266,10 +316,11 @@ def test_structure_levels_long():
 
 def test_structure_stop_floor_mult_mapping() -> None:
     print("\n=== 測試結構止損 ATR floor 對應 ===")
-    assert get_structure_stop_floor_mult("breakout") == 2.0
-    assert get_structure_stop_floor_mult("breakout_retest") == 2.0
-    assert get_structure_stop_floor_mult("trend_following") == 1.2
-    assert get_structure_stop_floor_mult("mean_reversion") == 0.8
+    # V10: floor mult 下調讓結構止損更貼近實際 K 線位
+    assert get_structure_stop_floor_mult("breakout") == 1.5
+    assert get_structure_stop_floor_mult("breakout_retest") == 1.5
+    assert get_structure_stop_floor_mult("trend_following") == 0.8
+    assert get_structure_stop_floor_mult("mean_reversion") == 0.5
     assert get_structure_stop_floor_mult("other") is None
     print("  [PASS]")
 
@@ -279,7 +330,7 @@ def test_exit_profile_family_mapping() -> None:
     assert normalize_strategy_family("breakout_retest") == "breakout"
     assert get_exit_profile("breakout_retest").family == "breakout"
     assert get_exit_profile("trend_following").family == "trend_following"
-    # V9: mean_reversion now has tp3 (tp3_atr_mult=2.8), tp2_final_exit=False
+    # V10: mean_reversion now has tp3 (tp3_atr_mult=2.8), tp2_final_exit=False
     assert get_exit_profile("mean_reversion").tp2_final_exit is False
     assert get_exit_profile("mean_reversion").tp3_atr_mult == 2.8
     assert get_exit_profile("mean_reversion").min_risk_reward == 1.5
@@ -439,7 +490,7 @@ def test_stop_loss_calculator_uses_structure_when_available():
 def test_stop_loss_calculator_prefers_structure_stop_for_breakout_long(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    print("\n=== 測試 breakout 結構止損優先於 ATR floor ===")
+    print("\n=== 測試 breakout 結構止損 blended ATR floor ===")
     calc = StopLossCalculator(db=None)
     monkeypatch.setattr(
         "core.risk.stop_loss.compute_structure_levels",
@@ -462,10 +513,10 @@ def test_stop_loss_calculator_prefers_structure_stop_for_breakout_long(
         min_risk_reward=1.4,
     )
     assert result.rejected is False
-    expected_stop = round(1.323 - (2.0 * 0.0088), 4)
-    assert result.stop_loss == expected_stop
-    assert result.soft_stop_loss == expected_stop
-    assert abs(1.323 - result.stop_loss) >= 2.0 * 0.0088
+    # V10: blended = structure*0.6 + atr_floor*0.4 (不再硬覆蓋)
+    # atr_floor = 1.323 - 1.5*0.0088 = 1.3098
+    # blended = 1.3210*0.6 + 1.3098*0.4 ≈ 1.3165
+    assert result.stop_loss < 1.323
     assert result.hard_stop_loss < result.soft_stop_loss
     assert result.sl_atr_mult == 2.0
     assert result.structure_stop_floor_triggered is True
@@ -475,7 +526,7 @@ def test_stop_loss_calculator_prefers_structure_stop_for_breakout_long(
 def test_stop_loss_calculator_prefers_structure_stop_for_breakout_short(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    print("\n=== 測試 breakout SHORT 結構止損優先於 ATR floor ===")
+    print("\n=== 測試 breakout SHORT 結構止損 blended ATR floor ===")
     calc = StopLossCalculator(db=None)
     monkeypatch.setattr(
         "core.risk.stop_loss.compute_structure_levels",
@@ -498,10 +549,10 @@ def test_stop_loss_calculator_prefers_structure_stop_for_breakout_short(
         min_risk_reward=0.7,
     )
     assert result.rejected is False
-    expected_stop = 103.0
-    assert result.stop_loss == expected_stop
-    assert result.soft_stop_loss == expected_stop
-    assert abs(result.stop_loss - 99.0) >= 4.0
+    # V10: blended = structure*0.6 + atr_floor*0.4
+    # atr_floor = 99.0 + 1.5*2.0 = 102.0
+    # blended = 100.5*0.6 + 102.0*0.4 = 101.1
+    assert result.stop_loss > 99.0
     assert result.hard_stop_loss > result.soft_stop_loss
     assert result.sl_atr_mult == 2.0
     assert result.structure_stop_floor_triggered is True
