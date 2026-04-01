@@ -497,8 +497,10 @@ class BaseStrategy(ABC):
 
         is_ranging_only = self.allowed_regimes == [MarketRegime.RANGING]
 
+        _mtf_no_direction = False
         if not is_ranging_only:
             if full.mtf is None or full.mtf.recommended_direction is None:
+                _mtf_no_direction = True
                 logger.debug(
                     f"MTF_GATE_SOFT: {full.symbol} no recommended direction, "
                     f"allowing with reduced strength"
@@ -515,10 +517,13 @@ class BaseStrategy(ABC):
             mtf_direction = full.mtf.recommended_direction
             mtf_confidence = full.mtf.confidence
 
-        if (not is_ranging_only) and full.mtf and full.mtf.confidence < 1.0:
+        # MTF confidence 縮放 — 已無方向時跳過（上面已罰 ×0.5）
+        # 有方向時，confidence 下限 0.3，不讓低信心直接殺死信號
+        if (not is_ranging_only) and full.mtf and full.mtf.confidence < 1.0 and not _mtf_no_direction:
+            effective_conf = max(full.mtf.confidence, 0.3)
             for sig in signals:
-                sig.strength = round(sig.strength * full.mtf.confidence, 4)
-                sig.indicators["mtf_confidence_scaled"] = full.mtf.confidence
+                sig.strength = round(sig.strength * effective_conf, 4)
+                sig.indicators["mtf_confidence_scaled"] = effective_conf
 
         htf_rsi_ok = full.htf_rsi_confirmed
 

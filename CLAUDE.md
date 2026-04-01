@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-TradingBrain V10 is a Binance Futures automated trading system (testnet/research-focused). It consists of a Python backend (trading engine + FastAPI), a React/TypeScript frontend dashboard, Telegram notifications, and structure-first trade management with soft/hard stops.
+TradingBrain V10.1 is a Binance Futures automated trading system (testnet/research-focused). It consists of a Python backend (trading engine + FastAPI), a React/TypeScript frontend dashboard, Telegram notifications, and structure-first trade management with soft/hard stops.
 
 ## Commands
 
@@ -63,19 +63,24 @@ Hard gates at 4h/1h block invalid setups before 15m analysis runs.
 
 Managed via `pending_entry` dict in the main orchestration loop.
 
-### Risk Layer (`core/risk/`) — V10 Fixed-Margin Model
+### Risk Layer (`core/risk/`) — V10.1 Structure-First Model
 - **V10**: Fixed-margin position sizing ($200-600 per trade, scaled by coin max leverage tier)
 - **V10**: Strategy-level leverage caps — Trend 20x / Breakout 25x / Mean Reversion 15x (overrides coin max)
 - **V10**: C-tier signal rejection — signal strength < 0.5 auto-rejected, no junk trades
-- **V10**: Fee-aware dynamic TP floor — TP minimums guarantee coverage of 2.5x round-trip fees
-- **V10**: Mean reversion min risk-reward raised to 1.5 (from 1.0)
+- **V10.1**: SL structure-first — swing high/low directly used, NO ATR blending. Too close (<0.3%) = reject trade
+- **V10.1**: TP structure-first — fibonacci/swing levels used directly, ATR only as fallback when no structure
+- **V10.1**: Fee-aware TP floor at 0.25% (covers round-trip fees only, no artificial minimum)
+- **V10.1**: R:R gate uses TP1/SL (not TP3/SL) — first target must justify the risk
+- **V10.1**: After TP1 hit → stop moves to breakeven (entry), not aggressively tightened
+- **V10.1**: Trend following tp1_close_pct = 50% (lock more profit at first target)
+- **V10.1**: Observation timeout: 45min default, 60min after TP1 hit
+- **V10**: Mean reversion min risk-reward = 1.5
 - Per-coin max leverage from Binance API (BTC 125x, ETH 100x, ATOM 20x, etc.)
 - Full account balance as collateral (CROSSED mode, no balance division)
-- Dynamic stop-loss observation mode (wick detection vs confirmed breakdown)
-- Structure-first stop placement with ATR floor protection
+- Dynamic stop-loss observation mode (wick detection vs confirmed breakdown, 45min/60min timeout)
 - Correlation blocking (e.g., BTC LONG + ETH LONG cannot coexist)
 - Regime hysteresis: 3+ bars minimum between regime switches
-- Exit profiles differ per strategy — Breakout: `tp1=1.5 ATR / tp2=3.0 ATR / tp3=4.5 ATR`; Trend and Mean Reversion have separate configs
+- Exit profiles per strategy — structure TP levels first, ATR multipliers as fallback only
 
 ### Backend Directory Map
 | Path | Purpose |
@@ -93,7 +98,7 @@ Managed via `pending_entry` dict in the main orchestration loop.
 | `core/brain/` | State management and manual overrides |
 | `database/` | SQLite models (analysis logs, trades, regime observations) |
 | `notifications/` | Telegram notification layer |
-| `tests/` | Pytest suite (12 files, ~70 tests) |
+| `tests/` | Pytest suite (18 files, 113 tests) |
 
 ### Frontend Directory Map
 | Path | Purpose |

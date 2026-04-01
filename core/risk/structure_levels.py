@@ -37,17 +37,6 @@ class StructureLevels:
     source: str = "structure"
 
 
-def get_structure_stop_floor_mult(strategy_name: str) -> float | None:
-    """Minimum ATR distance allowed when a structure stop overrides the ATR fallback."""
-    family = normalize_strategy_family(strategy_name)
-    if family == "breakout":
-        return 1.5
-    if family == "trend_following":
-        return 0.8
-    if family == "mean_reversion":
-        return 0.5
-    return None
-
 
 def _recent_swing_low(df: pd.DataFrame, lookback: int = 192, order: int = 5) -> float | None:
     """Find the most recent swing low with meaningful structure.

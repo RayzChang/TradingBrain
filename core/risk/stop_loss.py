@@ -1,12 +1,7 @@
 """
-ATR-based stop-loss and take-profit templates.
+Structure-first stop-loss and take-profit calculation.
 
-Most strategies use the default multi-stage TP1 / TP2 / TP3 profile.
-`mean_reversion` uses a shorter profile:
-- tighter stop
-- nearer TP1
-- fixed TP2
-- no TP3 / no long-tail trailing expectation
+SL/TP 以技術圖結構（swing high/low、fibonacci）為主，ATR 只在無結構時作為後備。
 """
 
 from dataclasses import dataclass
@@ -19,7 +14,6 @@ from core.risk.exit_profiles import get_exit_profile, normalize_strategy_family
 from core.risk.structure_levels import (
     _hard_stop_buffer,
     compute_structure_levels,
-    get_structure_stop_floor_mult,
 )
 
 if TYPE_CHECKING:
@@ -224,156 +218,107 @@ class StopLossCalculator:
             elif direction == "SHORT" and ec_high is not None and float(ec_high) > 0:
                 candle_stop = float(ec_high) * 1.002
 
+        # ── SL：結構做主，不混合 ATR ──
+        structure_floor_triggered = False
         if structure_stop is not None:
             soft_stop_loss = structure_stop
             hard_stop_loss = structure_hard_stop or structure_stop
-            structure_floor_triggered = bool(
-                structure_stop_anchor is not None
-                and round(float(structure_stop_anchor), 4) != round(float(structure_stop), 4)
+
+            # 入場 K 線止損：和結構取較寬的（保護用）
+            if candle_stop is not None:
+                if direction == "LONG":
+                    soft_stop_loss = min(soft_stop_loss, candle_stop)
+                else:
+                    soft_stop_loss = max(soft_stop_loss, candle_stop)
+
+            # 安全繩：結構止損太近 → 拒絕開單，不混合
+            min_sl_pct = 0.003  # 0.3% of entry
+            sl_dist = abs(entry_price - soft_stop_loss)
+            if sl_dist < entry_price * min_sl_pct:
+                logger.warning(
+                    f"STRUCTURE_SL_TOO_CLOSE: {symbol or 'UNKNOWN'} "
+                    f"distance={sl_dist:.4f} < {entry_price * min_sl_pct:.4f} "
+                    f"(0.3%), rejecting trade"
+                )
+                return StopLossResult(
+                    stop_loss=0.0, soft_stop_loss=0.0, hard_stop_loss=0.0,
+                    take_profit=0.0, rejected=True,
+                    reason="structure stop too close to entry (<0.3%)",
+                )
+
+            # hard_stop buffer 重新計算（確保 hard > soft）
+            hs_buffer = abs(float(hard_stop_loss) - float(soft_stop_loss))
+            if hs_buffer <= 0:
+                hs_buffer = _hard_stop_buffer(entry_price, atr, family)
+            if direction == "LONG":
+                hard_stop_loss = max(soft_stop_loss - hs_buffer, 0.0)
+            else:
+                hard_stop_loss = soft_stop_loss + hs_buffer
+
+            logger.info(
+                f"STRUCTURE_SL: {symbol or 'UNKNOWN'} "
+                f"anchor={f'{structure_stop_anchor:.4f}' if structure_stop_anchor else 'n/a'} "
+                f"soft={soft_stop_loss:.4f} hard={hard_stop_loss:.4f} "
+                f"distance={sl_dist/entry_price*100:.2f}%"
+            )
+        else:
+            # 無結構 → ATR 作為後備
+            if candle_stop is not None:
+                if direction == "LONG":
+                    soft_stop_loss = min(soft_stop_loss, candle_stop)
+                else:
+                    soft_stop_loss = max(soft_stop_loss, candle_stop)
+            logger.debug(
+                f"NO_STRUCTURE_SL: {symbol or 'UNKNOWN'} using ATR fallback "
+                f"soft={soft_stop_loss:.4f}"
             )
 
-            # 融合 candle_stop：取結構止損和入場 K 線止損中較寬的
-            if candle_stop is not None:
-                if direction == "LONG":
-                    soft_stop_loss = min(soft_stop_loss, candle_stop)
-                else:
-                    soft_stop_loss = max(soft_stop_loss, candle_stop)
-
-            floor_mult = get_structure_stop_floor_mult(strategy_name)
-            if floor_mult is not None and atr > 0:
-                min_distance = float(floor_mult) * float(atr)
-                actual_distance = abs(entry_price - soft_stop_loss)
-                if actual_distance < min_distance:
-                    hard_stop_buffer = abs(float(hard_stop_loss) - float(soft_stop_loss))
-                    if hard_stop_buffer <= 0:
-                        hard_stop_buffer = _hard_stop_buffer(entry_price, atr, family)
-                    # 軟化 ATR floor：混合而非硬覆蓋
-                    # blended = structure_stop * 0.6 + atr_floor * 0.4
-                    if direction == "LONG":
-                        atr_floor_stop = entry_price - min_distance
-                        blended_stop = soft_stop_loss * 0.6 + atr_floor_stop * 0.4
-                        soft_stop_loss = blended_stop
-                        hard_stop_loss = max(soft_stop_loss - hard_stop_buffer, 0.0)
-                    else:
-                        atr_floor_stop = entry_price + min_distance
-                        blended_stop = soft_stop_loss * 0.6 + atr_floor_stop * 0.4
-                        soft_stop_loss = blended_stop
-                        hard_stop_loss = soft_stop_loss + hard_stop_buffer
-                    structure_floor_triggered = True
-                    logger.info(
-                        "STRUCTURE_STOP_FLOOR: "
-                        f"{symbol or 'UNKNOWN'} structure={structure_stop:.4f} "
-                        f"atr_floor={atr_floor_stop:.4f} blended={soft_stop_loss:.4f}"
-                    )
-
-            # 安全下限：candle_stop 不得比 atr_floor * 0.5 更近
-            if candle_stop is not None and atr > 0:
-                min_safe = 0.5 * atr
-                candle_distance = abs(entry_price - candle_stop)
-                if candle_distance < min_safe:
-                    logger.debug(
-                        f"CANDLE_STOP_SAFETY: candle_stop too close "
-                        f"({candle_distance:.4f} < {min_safe:.4f}), widening"
-                    )
-
-            if structure_floor_triggered:
-                anchor_text = (
-                    f"{structure_stop_anchor:.4f}"
-                    if structure_stop_anchor is not None
-                    else "n/a"
-                )
-                logger.info(
-                    "STRUCTURE_STOP_ZONE: "
-                    f"{symbol or 'UNKNOWN'} anchor={anchor_text} "
-                    f"soft={soft_stop_loss:.4f} hard={hard_stop_loss:.4f}"
-                )
-        else:
-            structure_floor_triggered = False
-            # 沒有結構止損時，如果有 candle_stop 就用它
-            if candle_stop is not None:
-                if direction == "LONG":
-                    soft_stop_loss = min(soft_stop_loss, candle_stop)
-                else:
-                    soft_stop_loss = max(soft_stop_loss, candle_stop)
-
+        # ── TP：結構做主，ATR 只是後備 ──
+        # 有結構 TP → 直接用；沒有 → 保留 ATR fallback
         if structure_tp1 is not None:
-            if direction == "LONG":
-                tp1 = max(structure_tp1, tp1)
-            else:
-                tp1 = min(structure_tp1, tp1)
+            tp1 = structure_tp1
         if structure_tp2 is not None:
-            if direction == "LONG":
-                tp2 = max(structure_tp2, tp2)
-            else:
-                tp2 = min(structure_tp2, tp2)
-        if structure_tp3 is not None or is_mean_reversion:
-            if is_mean_reversion:
-                tp3 = 0.0
-            elif structure_tp3 is not None:
-                if direction == "LONG":
-                    tp3 = max(structure_tp3, tp3)
-                else:
-                    tp3 = min(structure_tp3, tp3)
+            tp2 = structure_tp2
+        if is_mean_reversion:
+            tp3 = 0.0
+        elif structure_tp3 is not None:
+            tp3 = structure_tp3
 
-        # ── TP 最低百分比地板：手續費感知動態計算 ──
-        # Binance taker fee = 0.04% per side → round-trip = 0.08% of notional
-        # 但手續費佔保證金的比例 = round_trip_fee_pct * leverage
-        # 要讓 TP 價格移動 * leverage > 手續費佔保證金比例
-        # 所以 TP 最低價格移動 % = round_trip_fee / safety_margin
-        # safety_margin = 我們要求 TP 淨賺至少是手續費的 2.5 倍
-        base_fee_pct = 0.0008  # 0.08% round-trip (of notional = of price move)
-        eff_leverage = leverage if leverage and leverage > 0 else 20
-        # TP 價格移動需覆蓋：來回手續費 × 安全倍數
-        # 例：手續費 0.08%，安全倍數 2.5 → TP 至少移動 0.2%
-        # 高槓桿時手續費佔保證金比例更大，但 TP 是按價格移動算的
-        # 真正的保底：TP% * leverage > fee% * leverage * safety_mult
-        # 簡化後：TP% > fee% * safety_mult（手續費是按名義值算的）
-        # 但低槓桿時固定地板可能太高反而卡單，所以取 max
-        fee_safety_mult = 2.5  # TP 淨利至少覆蓋 2.5 倍手續費
-        fee_aware_floor = base_fee_pct * fee_safety_mult  # = 0.2%
-        tp1_floor_pct = max(0.008, fee_aware_floor)        # TP1 至少 0.8%
-        tp2_floor_pct = max(0.015, fee_aware_floor * 2)    # TP2 至少 1.5%
-        tp3_floor_pct = max(0.025, fee_aware_floor * 3)    # TP3 至少 2.5%
-        logger.debug(
-            f"TP floor: leverage={eff_leverage}x fee_floor={fee_aware_floor:.4f} "
-            f"tp1={tp1_floor_pct:.4f} tp2={tp2_floor_pct:.4f} tp3={tp3_floor_pct:.4f}"
-        )
-
+        # TP 手續費安全網（只保證不虧手續費，不設人為高地板）
+        fee_floor_pct = 0.0025  # 0.25% — 覆蓋來回手續費 0.08% 的 ~3 倍
         if direction == "LONG":
-            tp1 = max(tp1, entry_price * (1 + tp1_floor_pct))
-            tp2 = max(tp2, entry_price * (1 + tp2_floor_pct))
+            tp1 = max(tp1, entry_price * (1 + fee_floor_pct))
+            tp2 = max(tp2, entry_price * (1 + fee_floor_pct * 2))
             if tp3 > 0:
-                tp3 = max(tp3, entry_price * (1 + tp3_floor_pct))
+                tp3 = max(tp3, entry_price * (1 + fee_floor_pct * 3))
         else:
-            tp1 = min(tp1, entry_price * (1 - tp1_floor_pct))
-            tp2 = min(tp2, entry_price * (1 - tp2_floor_pct))
+            tp1 = min(tp1, entry_price * (1 - fee_floor_pct))
+            tp2 = min(tp2, entry_price * (1 - fee_floor_pct * 2))
             if tp3 > 0:
-                tp3 = min(tp3, entry_price * (1 - tp3_floor_pct))
+                tp3 = min(tp3, entry_price * (1 - fee_floor_pct * 3))
 
-        final_target_distance = abs((tp2 if is_mean_reversion else tp3) - entry_price)
-        final_target_price = tp2 if is_mean_reversion else tp3
-
+        # ── R:R 檢查：用 TP1/SL，不是 TP3/SL ──
         sl_distance_abs = abs(entry_price - soft_stop_loss)
+        tp1_distance_abs = abs(tp1 - entry_price)
         if sl_distance_abs <= 0:
             return StopLossResult(
-                stop_loss=0.0,
-                soft_stop_loss=0.0,
-                hard_stop_loss=0.0,
-                take_profit=0.0,
-                rejected=True,
+                stop_loss=0.0, soft_stop_loss=0.0, hard_stop_loss=0.0,
+                take_profit=0.0, rejected=True,
                 reason="invalid structure stop distance",
             )
 
-        if final_target_distance / sl_distance_abs < min_rr:
+        tp1_rr = tp1_distance_abs / sl_distance_abs
+        if tp1_rr < min_rr:
             logger.warning(
-                f"Target/SL ratio {final_target_distance/sl_distance_abs:.2f} "
-                f"< min_risk_reward {min_rr}, reject"
+                f"TP1_RR_REJECT: {symbol or 'UNKNOWN'} "
+                f"TP1/SL={tp1_rr:.2f} < min_rr={min_rr} "
+                f"(TP1_dist={tp1_distance_abs:.4f} SL_dist={sl_distance_abs:.4f})"
             )
             return StopLossResult(
                 stop_loss=soft_stop_loss,
                 soft_stop_loss=soft_stop_loss,
                 hard_stop_loss=hard_stop_loss,
-                take_profit=final_target_price,
+                take_profit=tp1,
                 tp1=tp1,
                 tp2=tp2,
                 tp3=tp3,
@@ -389,14 +334,22 @@ class StopLossCalculator:
                 sl_atr_mult=sl_mult,
                 structure_stop_floor_triggered=structure_floor_triggered,
                 rejected=True,
-                reason=f"risk reward below {min_rr}",
+                reason=f"TP1 risk reward {tp1_rr:.2f} below {min_rr}",
             )
+
+        final_target_price = tp2 if is_mean_reversion else tp3
+
+        logger.info(
+            f"SL_TP_FINAL: {symbol or 'UNKNOWN'} {direction} "
+            f"SL={soft_stop_loss:.4f} TP1={tp1:.4f} TP2={tp2:.4f} "
+            f"TP1_RR={tp1_rr:.2f}"
+        )
 
         return StopLossResult(
             stop_loss=round(soft_stop_loss, 4),
             soft_stop_loss=round(soft_stop_loss, 4),
             hard_stop_loss=round(hard_stop_loss, 4),
-            take_profit=round(final_target_price, 4),
+            take_profit=round(final_target_price, 4) if final_target_price else round(tp1, 4),
             tp1=round(tp1, 4),
             tp2=round(tp2, 4),
             tp3=round(tp3, 4),

@@ -176,7 +176,7 @@ class MeanReversionStrategy(BaseStrategy):
                         f"{self.name} LONG blocked: {symbol} momentum={candle_ctx.momentum_score:.2f} too bearish for MR long"
                     )
                 else:
-                    strength = 0.5 + (self.rsi_oversold - rsi_f) / 40.0
+                    strength = 0.6 + (self.rsi_oversold - rsi_f) / 40.0
                     strength = min(max(strength, 0.0), 1.0)
 
                     if has_bull_div:
@@ -196,7 +196,7 @@ class MeanReversionStrategy(BaseStrategy):
                     has_bull_confirm = has_bull_div or has_confident_bull
                     if bullish_reversal or has_bull_confirm:
                         if not (bullish_reversal and has_bull_confirm):
-                            strength = round(strength * 0.75, 4)
+                            strength = round(strength * 0.85, 4)
 
                         # 量能軟檢查
                         if "volume" in result.df_enriched.columns:
@@ -253,7 +253,7 @@ class MeanReversionStrategy(BaseStrategy):
                         f"{self.name} SHORT blocked: {symbol} momentum={candle_ctx.momentum_score:.2f} too bullish for MR short"
                     )
                 else:
-                    strength = 0.5 + (rsi_f - self.rsi_overbought) / 40.0
+                    strength = 0.6 + (rsi_f - self.rsi_overbought) / 40.0
                     strength = min(max(strength, 0.0), 1.0)
 
                     if has_bear_div:
@@ -273,7 +273,7 @@ class MeanReversionStrategy(BaseStrategy):
                     has_bear_confirm = has_bear_div or has_confident_bear
                     if bearish_reversal or has_bear_confirm:
                         if not (bearish_reversal and has_bear_confirm):
-                            strength = round(strength * 0.75, 4)
+                            strength = round(strength * 0.85, 4)
 
                         # 量能軟檢查
                         if "volume" in result.df_enriched.columns:

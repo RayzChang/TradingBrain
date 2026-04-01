@@ -1253,8 +1253,10 @@ class TradingBrain:
                 }
                 if signal_grade == "C":
                     checks["close_below_breakout"] = close < pending.breakout_price
-            failed = [name for name, ok in checks.items() if not ok]
-            if not failed:
+            passed = sum(1 for ok in checks.values() if ok)
+            # A/B 級: 2 個基礎 check 過 1 個即可；C 級: 全部都要過
+            required = len(checks) if signal_grade == "C" else 1
+            if passed >= required:
                 confirmed_signal = self._build_breakout_retest_signal(pending)
                 self.db.insert_analysis_log({
                     "symbol": confirmed_signal.symbol,

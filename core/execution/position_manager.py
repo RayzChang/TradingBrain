@@ -410,7 +410,8 @@ def _soft_stop_confirmed(
     return _check_consecutive_closes(candles_5m, side, soft_stop, 1)
 
 
-OBSERVATION_TIMEOUT_SEC = 1800  # 30 分鐘 CONSOLIDATING 上限
+OBSERVATION_TIMEOUT_SEC = 2700       # 45 分鐘 CONSOLIDATING 上限（TP1 前）
+OBSERVATION_TIMEOUT_AFTER_TP1 = 3600  # 60 分鐘（TP1 後，已有利潤，給更多時間跑 TP2）
 TIME_STOP_BREAKEVEN_SEC = 4 * 3600   # tp_stage==0 且持倉 >4h → 止損移至 entry
 TIME_STOP_EXIT_SEC = 8 * 3600        # tp_stage==0 且持倉 >8h → 平倉
 
@@ -478,16 +479,9 @@ async def run_position_check(
                 new_qty = current_qty - close_qty
                 success = await _partial_close(db, client, trade, close_qty, current, "TP1")
                 if success:
-                    candidate_soft = _recent_structure_stop_from_candles(
-                        symbol_candles,
-                        side,
-                        family,
-                    )
-                    new_soft = soft_stop
-                    if is_mean_reversion:
-                        new_soft = entry
-                    elif _is_better_stop(side, candidate_soft, soft_stop):
-                        new_soft = candidate_soft
+                    # TP1 後 → 保本止損（entry），不激進收緊到結構位
+                    # 讓剩餘倉位有空間跑向 TP2，不被正常波動洗出
+                    new_soft = entry
 
                     new_hard = _derive_hard_stop_from_soft(
                         new_soft if new_soft > 0 else (soft_stop or entry),
@@ -740,7 +734,8 @@ async def run_position_check(
                     if obs_key not in obs:
                         obs[obs_key] = now
                     elapsed = (now - obs[obs_key]).total_seconds()
-                    if elapsed >= OBSERVATION_TIMEOUT_SEC:
+                    timeout = OBSERVATION_TIMEOUT_AFTER_TP1 if tp_stage >= 1 else OBSERVATION_TIMEOUT_SEC
+                    if elapsed >= timeout:
                         exit_reason = "OBSERVATION_STOP_TIMEOUT"
                         if tp_stage == 1:
                             exit_reason = "OBSERVATION_STOP_TIMEOUT_AFTER_TP1"

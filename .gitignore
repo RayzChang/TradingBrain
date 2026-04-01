@@ -64,6 +64,10 @@ frontend/out.txt
 *.db-wal
 *.db-shm
 
+# Backtest results (regenerated each run)
+scripts/*_result.txt
+scripts/*_result.txt.zip
+
 # Data temp scripts
 data/screenshot_test.py
 
